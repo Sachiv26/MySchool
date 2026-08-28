@@ -1,0 +1,48 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env
+.env*.local
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# prisma / db
+prisma/*.db
+prisma/*.db-journal
+
+# runtime data (uploaded docs, processed inbox, ocr cache) - never commit
+/data/
+/incoming-messages-private/
+
+# test / coverage
+coverage/
+
+# keep the sample inbox files under /incoming-messages but not the private dir
+dev-server.log
+
+# tesseract language model cache (downloaded on first OCR run)
+*.traineddata
+
+# personal photos dropped into the demo inbox - never commit
+/incoming-messages/PHOTO-*

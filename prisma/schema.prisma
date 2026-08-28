@@ -1,0 +1,604 @@
+// Prisma schema for MySchool Connect.
+// Target database: PostgreSQL (see docker-compose.yml). Provider is intentionally
+// not hard-wired to a single cloud service and keeps every school-scoped entity
+// associated with a School for the multi-school architecture.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums — these capture *stateful* values (workflow/status). Grades, message
+// types and reminder rules are deliberately NOT enums: they are DB-configurable.
+// ---------------------------------------------------------------------------
+
+enum Role {
+  PARENT
+  TEACHER
+  ADMIN
+}
+
+enum Relationship {
+  MOTHER
+  FATHER
+  GUARDIAN
+  OTHER
+}
+
+enum ProcessingStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  NEEDS_REVIEW
+  FAILED
+}
+
+enum ReminderStatus {
+  PENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  PUSH
+  WHATSAPP
+}
+
+enum AbsenceReason {
+  SICK
+  MEDICAL_APPOINTMENT
+  FAMILY_MATTER
+  OTHER
+}
+
+enum AbsenceStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum PaymentStatus {
+  NOT_REQUIRED
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum ActionStatus {
+  PENDING
+  DONE
+  DISMISSED
+}
+
+enum ReminderType {
+  UPCOMING
+  DUE
+  OVERDUE
+  IMMEDIATE
+  CUSTOM
+}
+
+// ---------------------------------------------------------------------------
+// Identities & tenancy
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+  name         String
+  role         Role    @default(PARENT)
+
+  parentProfile  ParentProfile?
+  memberships    SchoolMembership[]
+
+  auditLogs       AuditLog[]    @relation("ActorLogs")
+  notifications   Notification[]
+  absences        Absence[]     @relation("AbsenceSubmitter")
+  reviewedMessages Message[]    @relation("ReviewedMessages")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// A User's membership in a school (admin/teacher). A user may belong to
+// multiple schools. Scoping is derived from here and from ParentProfile child
+// links at authorization time.
+model SchoolMembership {
+  id      String @id @default(cuid())
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId  String
+  school  School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  role    Role   @default(ADMIN)
+  isActive Boolean @default(true)
+
+  @@unique([schoolId, userId, role])
+  @@index([userId])
+  @@index([schoolId])
+}
+
+model School {
+  id           String  @id @default(cuid())
+  name         String
+  code         String  @unique
+  address      String?
+  phone        String?
+  email        String?
+  primaryColor String? @default("#0f766e")
+
+  grades          Grade[]
+  classes         Class[]
+  children        Child[]
+  messages        Message[]
+  events          SchoolEvent[]
+  memberships     SchoolMembership[]
+  paymentRequests PaymentRequest[]
+  absences        Absence[]
+  auditLogs       AuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Grade {
+  id       String @id @default(cuid())
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  name     String // e.g. "Grade R", "Grade 4"
+  order    Int    @default(0) // display ordering
+
+  classes       Class[]
+  children      Child[]
+  messageGrades MessageGrade[]
+
+  @@unique([schoolId, name])
+  @@index([schoolId])
+}
+
+model Class {
+  id       String @id @default(cuid())
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  grade    Grade  @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  gradeId  String
+  name     String // e.g. "4A", "4B"
+
+  children Child[]
+
+  @@unique([schoolId, gradeId, name])
+  @@index([schoolId])
+  @@index([gradeId])
+}
+// ---------------------------------------------------------------------------
+// Parents & children
+// ---------------------------------------------------------------------------
+
+model ParentProfile {
+  id     String @id @default(cuid())
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @unique
+
+  name     String
+  surname  String
+  email    String @unique
+  mobile   String?
+  // JSON of notification preferences, e.g. { "reminders": true, "minNoticeDays": 2 }
+  notificationPrefs Json?
+
+  children            ParentChild[]
+  paymentRecords      Payment[]
+  eventRegistrations  EventRegistration[]
+  actionItemStates    ActionItemState[]
+  reminders           Reminder[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Child {
+  id            String @id @default(cuid())
+  school        School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId      String
+  firstName     String
+  surname       String
+  grade         Grade  @relation(fields: [gradeId], references: [id])
+  gradeId       String
+  class         Class? @relation(fields: [classId], references: [id])
+  classId       String?
+  studentNumber String?
+
+  parents       ParentChild[]
+  absences      Absence[]
+  registrations EventRegistration[]
+  reminders     Reminder[]
+  actionStates  ActionItemState[]
+
+  @@index([schoolId])
+  @@index([gradeId])
+  @@index([classId])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Many-to-many between parents and children, with an explicit relationship role
+// (MOTHER / FATHER / GUARDIAN / OTHER). A child may belong to several parents.
+model ParentChild {
+  id           String          @id @default(cuid())
+  parent       ParentProfile   @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  parentId     String
+  child        Child           @relation(fields: [childId], references: [id], onDelete: Cascade)
+  childId      String
+  relationship Relationship    @default(GUARDIAN)
+
+  @@unique([parentId, childId, relationship])
+  @@index([parentId])
+  @@index([childId])
+}
+
+// ---------------------------------------------------------------------------
+// Message ingestion
+// ---------------------------------------------------------------------------
+
+// Configurable message "types". NOT an enum — a seeded, admin-extensible table.
+model MessageTypeOption {
+  id       String @id @default(cuid())
+  key      String @unique // GENERAL, EVENT, SPORTS, PAYMENT, ...
+  label    String
+  color    String @default("#64748b") // UI tag color
+  priority Int    @default(0)         // higher = more urgent styling
+  messages Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Message {
+  id            String @id @default(cuid())
+  school        School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId      String
+
+  sourceFilename String
+  sourceType     String // txt | md | jpg | png | webp | pdf
+  originalFile   String? // stored/resolved path of the source
+  rawContent     String? // the raw body (txt/md) or first-page text for pdf
+  extractedText  String? // OCR'd text for images
+  ocrConfidence  Float?
+  ocrMethod      String?
+
+  messageTypeOption MessageTypeOption? @relation(fields: [messageTypeKey], references: [key])
+  messageTypeKey    String?
+
+  title     String?
+  summary   String?
+  eventDate DateTime? // date part only, local school timezone
+  startTime String?   // "09:00"
+  endTime   String?
+  location  String?
+  deadline  DateTime? // booking/registration deadline
+  amount    Decimal?  @db.Decimal(10, 2)
+  currency  String?   @default("ZAR")
+  requiredItems Json?
+  contactInformation Json?
+  sourceDate DateTime?
+  importance Int?       // 1..10
+  confidence Json?
+
+  needsReview      Boolean @default(false)
+  aiReview         Boolean @default(false) // needs human review before publishing
+  published        Boolean @default(false) // only approved messages are visible
+  rejected         Boolean @default(false)
+  processingStatus ProcessingStatus @default(PENDING)
+  processingError  String?
+
+  importedAt   DateTime @default(now())
+  reviewedById String?
+  reviewedBy   User?    @relation("ReviewedMessages", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedAt   DateTime?
+
+  grades         MessageGrade[]
+  events         SchoolEvent[]
+  actionItems    ActionItem[]
+  reminders      Reminder[]
+  paymentRequest PaymentRequest[]
+
+  @@index([schoolId])
+  @@index([processingStatus])
+  @@index([published])
+  @@index([messageTypeKey])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Which grades a message applies to. A message with no MessageGrade rows but
+// published implies "all grades".
+model MessageGrade {
+  id        String @id @default(cuid())
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId String
+  grade     Grade  @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  gradeId   String
+
+  @@unique([messageId, gradeId])
+  @@index([messageId])
+  @@index([gradeId])
+}
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+model SchoolEvent {
+  id       String @id @default(cuid())
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  message  Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  messageId String?
+
+  title        String
+  description  String?
+  eventDate    DateTime
+  startTime    String?
+  endTime      String?
+  location     String?
+  isSchoolClosure Boolean @default(false)
+  registrationRequired Boolean @default(false)
+  registrationDeadline DateTime?
+
+  registrations    EventRegistration[]
+  paymentRequests  PaymentRequest[]
+  reminderChildren Reminder[] // see Reminder.event
+
+  @@index([schoolId])
+  @@index([eventDate])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model EventRegistration {
+  id       String @id @default(cuid())
+  event    SchoolEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  eventId  String
+  parent   ParentProfile @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  parentId String
+  child    Child @relation(fields: [childId], references: [id], onDelete: Cascade)
+  childId  String
+  status   String @default("REGISTERED") // REGISTERED | WAITLISTED | CANCELLED
+
+  @@unique([eventId, childId])
+  @@index([eventId])
+  @@index([childId])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Action items & per-family completion
+// ---------------------------------------------------------------------------
+
+model ActionItem {
+  id        String @id @default(cuid())
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId String
+  type      String @default("OTHER") // PAY | SIGN | BRING | REGISTER | REPLY | OTHER
+  title     String
+  amount    Decimal? @db.Decimal(10, 2)
+  deadline  DateTime?
+  states    ActionItemState[]
+
+  @@index([messageId])
+  createdAt DateTime @default(now())
+}
+
+model ActionItemState {
+  id             String @id @default(cuid())
+  actionItem     ActionItem @relation(fields: [actionItemId], references: [id], onDelete: Cascade)
+  actionItemId   String
+  parent         ParentProfile @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  parentId       String
+  child          Child? @relation(fields: [childId], references: [id], onDelete: SetNull)
+  childId        String?
+  status         ActionStatus @default(PENDING)
+
+  @@unique([actionItemId, parentId, childId])
+  @@index([parentId])
+  @@index([childId])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Reminders (configurable rules + generated instances)
+// ---------------------------------------------------------------------------
+
+// Configurable reminder rules — NOT hard-coded. offsetDays negative = days BEFORE
+// the anchor (eventDate or deadline). timeOfDay is local HH:mm.
+model ReminderRule {
+  id            String @id @default(cuid())
+  name          String
+  messageTypeKey String? // null rule applies to all; else scoped to a type
+  anchor        String @default("eventDate") // "eventDate" | "deadline"
+  offsetDays    Int    @default(-1)
+  timeOfDay     String @default("07:30")
+  reminderType  ReminderType @default(UPCOMING)
+  isActive      Boolean @default(true)
+  order         Int    @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Reminder {
+  id            String @id @default(cuid())
+  parentProfile ParentProfile? @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  parentId      String?
+  child         Child? @relation(fields: [childId], references: [id], onDelete: Cascade)
+  childId       String?
+  message       Message? @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId     String?
+  event         SchoolEvent? @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  eventId       String?
+  reminderRuleId String?
+  reminderType  ReminderType @default(UPCOMING)
+  title         String
+  body          String?
+  scheduledFor  DateTime
+  sentAt        DateTime?
+  status        ReminderStatus @default(PENDING)
+  attemptCount  Int @default(0)
+  lastError     String?
+
+  @@index([status])
+  @@index([scheduledFor])
+  @@index([parentId])
+  @@index([messageId])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+// ---------------------------------------------------------------------------
+// Absences
+// ---------------------------------------------------------------------------
+
+model Absence {
+  id        String @id @default(cuid())
+  school    School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId  String
+  child     Child  @relation(fields: [childId], references: [id], onDelete: Cascade)
+  childId   String
+  date      DateTime // date of absence (date part)
+  reason    AbsenceReason
+  notes     String?
+  attachment Attachment?
+  submittedBy User @relation("AbsenceSubmitter", fields: [submittedById], references: [id], onDelete: Cascade)
+  submittedById String
+  status    AbsenceStatus @default(SUBMITTED)
+
+  @@index([schoolId])
+  @@index([childId])
+  @@index([date])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (sick notes etc.) — stored outside public/, never served statically
+// ---------------------------------------------------------------------------
+
+model Attachment {
+  id           String @id @default(cuid())
+  originalName String
+  storedName   String
+  mimeType     String
+  size         Int
+  category     String @default("GENERAL") // SICK_NOTE, PERMISSION, OTHER
+  location     String // relative path under /data/uploads
+  uploadedById String?
+  absence      Absence? @relation(fields: [absenceId], references: [id], onDelete: SetNull)
+  absenceId    String? @unique
+
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Payments (provider-agnostic)
+// ---------------------------------------------------------------------------
+
+model PaymentRequest {
+  id       String @id @default(cuid())
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId String
+  message  Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  messageId String?
+  event    SchoolEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  eventId  String?
+  title    String
+  amount   Decimal @db.Decimal(10, 2)
+  currency String @default("ZAR")
+  dueDate  DateTime
+  description String?
+
+  payments Payment[]
+
+  @@index([schoolId])
+  @@index([dueDate])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payment {
+  id            String @id @default(cuid())
+  request       PaymentRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId     String
+  parent        ParentProfile @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  parentId      String
+  childId       String?
+  amount        Decimal @db.Decimal(10, 2)
+  currency      String @default("ZAR")
+  provider      String @default("MOCK")
+  providerReference String?
+  status        PaymentStatus
+  paidAt        DateTime?
+
+  @@index([parentId])
+  @@index([requestId])
+  @@index([status])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (in-app for the MVP; channel-ready for email/SMS/push/WhatsApp)
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id     String @id @default(cuid())
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  channel NotificationChannel @default(IN_APP)
+  title  String
+  body   String?
+  url    String?
+  readAt DateTime?
+
+  @@index([userId, readAt])
+  @@index([userId])
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Audit log & feature flags
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String @id @default(cuid())
+  actor      User?  @relation("ActorLogs", fields: [actorId], references: [id], onDelete: SetNull)
+  actorId    String?
+  school     School? @relation(fields: [schoolId], references: [id], onDelete: SetNull)
+  schoolId   String?
+  action     String
+  entityType String?
+  entityId   String?
+  payload    Json?
+
+  @@index([schoolId])
+  @@index([actorId])
+  @@index([action])
+  createdAt DateTime @default(now())
+}
+
+model FeatureFlag {
+  key         String @id
+  enabled     Boolean @default(false)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
