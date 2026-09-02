@@ -18,6 +18,7 @@ export const MessageTypes = [
   'UNIFORM',
   'PERMISSION',
   'HOMEWORK',
+  'PROJECT',
   'OTHER',
 ] as const;
 export type MessageType = (typeof MessageTypes)[number];
@@ -121,8 +122,13 @@ export const reviewMessageSchema = z.object({
   actionItems: z
     .array(
       z.object({
-        type: z.enum(['PAY', 'SIGN', 'BRING', 'REGISTER', 'REPLY', 'OTHER']).default('OTHER'),
+        type: z
+          .enum(['PAY', 'SIGN', 'BRING', 'REGISTER', 'REPLY', 'PREPARE', 'COMPLETE', 'WEAR', 'OTHER'])
+          .default('OTHER'),
         title: z.string().min(1),
+        description: optionalStringSchema,
+        assignee: z.enum(['PARENT', 'CHILD', 'TEACHER', 'UNKNOWN']).default('UNKNOWN'),
+        subject: optionalStringSchema,
         amount: z.coerce.number().nonnegative().optional().nullable(),
         deadline: z.string().datetime().optional().nullable(),
       })

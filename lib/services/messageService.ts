@@ -5,6 +5,7 @@ import { recordAudit, AuditActions } from './audit';
 import { reviewMessageSchema } from '@/lib/validation/schemas';
 import { INCOMING_DIR } from '@/lib/env';
 import { processFileIntoMessage } from './pipeline';
+import { notify } from './notificationService';
 
 export type ReviewInput = z.infer<typeof reviewMessageSchema>;
 
@@ -66,6 +67,9 @@ export async function reviewAndSave(
         messageId: message.id,
         type: a.type,
         title: a.title,
+        description: a.description ?? null,
+        assignee: a.assignee,
+        subject: a.subject ?? null,
         amount: a.amount != null ? new Prisma.Decimal(a.amount) : null,
         deadline: a.deadline ? new Date(a.deadline) : null,
       })),
@@ -159,6 +163,43 @@ if (input.amount && input.amount > 0) {
       await scheduleRemindersForPublishedMessage(message.id);
     } catch (err) {
       console.error('[messageService] reminder scheduling failed', err);
+    }
+
+    // Notify parents of the affected grades (in-app channel; the notification
+    // layer is channel-aware so a PUSH provider can be added later without
+    // changing this call site).
+    try {
+      const gradeRows = await prisma.messageGrade.findMany({
+        where: { messageId: message.id },
+        select: { gradeId: true },
+      });
+      const gradeIds = gradeRows.map((g) => g.gradeId);
+      const parents = await prisma.parentProfile.findMany({
+        where: {
+          children: {
+            some: {
+              child: { schoolId: opts.schoolId, ...(gradeIds.length ? { gradeId: { in: gradeIds } } : {}) },
+            },
+          },
+        },
+        select: { userId: true },
+        distinct: ['userId'],
+      });
+      const firstAction = input.actionItems?.[0];
+      const body = firstAction
+        ? `Action required (${firstAction.assignee.toLowerCase()}): ${firstAction.title}`
+        : input.summary ?? undefined;
+      for (const p of parents) {
+        await notify({
+          userId: p.userId,
+          channel: 'EMAIL',
+          title: input.title ?? message.title ?? 'New school message',
+          body,
+          url: `/messages/${message.id}`,
+        });
+      }
+    } catch (err) {
+      console.error('[messageService] parent notifications failed', err);
     }
   }
 

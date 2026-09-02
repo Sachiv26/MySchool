@@ -14,7 +14,7 @@ const DEFAULT_FLAGS: Record<FeatureKey, boolean> = {
   'parent-chat': false,
   payments: true,
   whatsapp: false,
-  'email-notifications': false,
+  'email-notifications': true,
   sms: false,
   teachers: false,
 };

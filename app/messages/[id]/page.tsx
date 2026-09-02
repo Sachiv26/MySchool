@@ -24,19 +24,15 @@ interface Detail {
   grades: string[];
   allGrades: boolean;
   rawText: string | null;
-  actionItems: { type: string; title: string; amount: number | null; deadline: string | null }[];
+  actionItems: { type: string; title: string; description: string | null; assignee: string | null; amount: number | null; deadline: string | null }[];
   paymentRequest: { id: string; title: string; amount: number; currency: string; dueDate: string | null } | null;
   reminders: { id: string; reminderType: string; scheduledFor: string; status: string }[];
 }
 
-export default function MessageDetailPage({ params }: { params: Promise<{ id: string }> }) {
+export default function MessageDetailPage({ params }: { params: { id: string } }) {
   const [message, setMessage] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [id, setId] = useState<string | null>(null);
-
-  useEffect(() => {
-    params.then((p) => setId(p.id));
-  }, [params]);
+  const id = params.id;
 
   useEffect(() => {
     if (!id) return;
@@ -100,7 +96,13 @@ export default function MessageDetailPage({ params }: { params: Promise<{ id: st
             <div key={i} className="card flex items-start justify-between gap-3 border-amber-200 bg-amber-50">
               <div>
                 <p className="text-sm font-semibold text-slate-900">{a.title}</p>
+                {a.description && <p className="mt-0.5 text-xs text-slate-600">{a.description}</p>}
                 <p className="mt-0.5 text-xs text-slate-500">
+                  {a.assignee && a.assignee !== 'UNKNOWN' && (
+                    <span className="mr-1.5 rounded bg-amber-200 px-1.5 py-0.5 text-[11px] font-semibold text-amber-900">
+                      {a.assignee === 'CHILD' ? 'For your child' : a.assignee === 'PARENT' ? 'For you' : a.assignee}
+                    </span>
+                  )}
                   {a.amount != null ? `${fmtMoney(a.amount)} · ` : ''}
                   {a.deadline ? `due ${fmtDateShort(a.deadline)}` : 'no deadline'}
                 </p>

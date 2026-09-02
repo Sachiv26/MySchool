@@ -9,10 +9,16 @@ import { MessageTypes } from '@/lib/validation/schemas';
  */
 
 export const aiActionItemSchema = z.object({
-  type: z.enum(['PAY', 'SIGN', 'BRING', 'REGISTER', 'REPLY', 'OTHER']).default('OTHER'),
+  type: z
+    .enum(['PAY', 'SIGN', 'BRING', 'REGISTER', 'REPLY', 'PREPARE', 'COMPLETE', 'WEAR', 'OTHER'])
+    .default('OTHER'),
   title: z.string().min(1),
+  description: z.string().nullable().optional(),
+  // Who the agent determined must act (rule 11): PARENT vs CHILD vs TEACHER.
+  assignee: z.enum(['PARENT', 'CHILD', 'TEACHER', 'UNKNOWN']).default('UNKNOWN'),
+  subject: z.string().nullable().optional(),
   amount: z.number().nullable().optional(),
-  deadline: z.string().nullable().optional(),
+  deadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
 });
 
 export const aiContactSchema = z
@@ -23,6 +29,40 @@ export const aiContactSchema = z
   })
   .nullable()
   .optional();
+
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/); // YYYY-MM-DD (ISO-8601 date part)
+
+// Rule 6: projects/assignments broken down into actionable tasks.
+export const aiProjectTaskSchema = z.object({
+  title: z.string().min(1),
+  description: z.string().nullable().optional(),
+  dueDate: isoDate.nullable().optional(),
+});
+
+export const aiProjectSchema = z.object({
+  title: z.string().min(1),
+  subject: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  assignedDate: isoDate.nullable().optional(),
+  dueDate: isoDate.nullable().optional(),
+  tasks: z.array(aiProjectTaskSchema).default([]),
+});
+
+// Rules 4/5/7 + ambiguity rule: every date the agent found, flagged as event
+// date vs deadline. Ambiguous dates stay null and are explained in `notes`
+// (and summarised in the top-level `dateNotes`).
+export const aiDetectedDateSchema = z.object({
+  date: isoDate.nullable(),
+  isDeadline: z.boolean().default(false),
+  context: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+// Rule 9: people explicitly named in the message (teachers, coaches, ...).
+export const aiPersonSchema = z.object({
+  name: z.string().min(1),
+  role: z.string().nullable().optional(),
+});
 
 export const extractionSchema = z.object({
   messageType: z.enum(MessageTypes),
@@ -48,6 +88,20 @@ export const extractionSchema = z.object({
   actionItems: z.array(aiActionItemSchema).default([]),
   contactInformation: aiContactSchema,
 
+  // Rule 2: a message can have multiple categories — the primary one is
+  // `messageType`; everything else that applies goes here.
+  categories: z.array(z.enum(MessageTypes)).default([]),
+  // Class mentions, e.g. "4B" (finer relevance than grade alone).
+  classes: z.array(z.string()).default([]),
+  // Rule 6: projects/assignments with their broken-down tasks.
+  projects: z.array(aiProjectSchema).default([]),
+  // Rules 4/5/7: every date found, event vs deadline, with ambiguity notes.
+  detectedDates: z.array(aiDetectedDateSchema).default([]),
+  // Rule 9: explicitly named people (teachers, coaches).
+  people: z.array(aiPersonSchema).default([]),
+  // Global explanation of ambiguous/unresolved dates (null when none).
+  dateNotes: z.string().nullable(),
+
   registrationRequired: z.boolean().nullable(),
   permissionRequired: z.boolean().nullable(),
   importance: z.number().int().min(1).max(10).default(3),
@@ -66,6 +120,10 @@ export const extractionSchema = z.object({
 
 export type AiExtraction = z.infer<typeof extractionSchema>;
 export type AiActionItem = z.infer<typeof aiActionItemSchema>;
+export type AiProject = z.infer<typeof aiProjectSchema>;
+export type AiProjectTask = z.infer<typeof aiProjectTaskSchema>;
+export type AiDetectedDate = z.infer<typeof aiDetectedDateSchema>;
+export type AiPerson = z.infer<typeof aiPersonSchema>;
 
 /** Validate + normalize raw, untrusted extraction output. Throws on invalid data. */
 export function validateExtraction(input: unknown): AiExtraction {

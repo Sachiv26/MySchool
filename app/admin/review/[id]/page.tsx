@@ -18,6 +18,17 @@ interface TypeOption {
   priority: number;
 }
 
+interface ReviewActionItem {
+  id: string;
+  type: string;
+  title: string;
+  description: string | null;
+  assignee: string | null;
+  subject: string | null;
+  amount: number | string | null;
+  deadline: string | null;
+}
+
 interface ReviewMessage {
   id: string;
   title: string | null;
@@ -39,12 +50,15 @@ interface ReviewMessage {
   requiredItems: unknown;
   contactInformation: unknown;
   importance: number | null;
+  extractedJson: unknown;
   grades: { grade: { id: string; name: string }; gradeId: string }[];
+  actionItems: ReviewActionItem[];
 }
 
 export default function ReviewMessagePage({ params }: { params: { id: string } }) {
   const router = useRouter();
   const [msg, setMsg] = useState<ReviewMessage | null>(null);
+  const [items, setItems] = useState<ReviewActionItem[]>([]);
   const [grades, setGrades] = useState<ReviewGrade[]>([]);
   const [types, setTypes] = useState<TypeOption[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +71,7 @@ export default function ReviewMessagePage({ params }: { params: { id: string } }
       apiGet<{ ok: true; grades: ReviewGrade[] }>('/api/admin/meta'),
       apiGet<{ ok: true; messageTypes: TypeOption[] }>('/api/admin/meta'),
     ])
-      .then(([m, g, t]) => { setMsg(m.message); setGrades(g.grades); setTypes(t.messageTypes); })
+      .then(([m, g, t]) => { setMsg(m.message); setItems(m.message.actionItems ?? []); setGrades(g.grades); setTypes(t.messageTypes); })
       .catch((e) => setError(e.message));
 
   useEffect(() => { load(); }, [params.id]);
@@ -95,7 +109,18 @@ export default function ReviewMessagePage({ params }: { params: { id: string } }
         currency: payload.currency || null,
         requiredItems: payload.requiredItems ? String(payload.requiredItems).split(',').map((s) => s.trim()).filter(Boolean) : [],
         contactInformation: payload.contactInformation || null,
-                importance: payload.importance ? Number(payload.importance) : null,
+        importance: payload.importance ? Number(payload.importance) : null,
+        actionItems: items
+          .filter((a) => a.title.trim().length > 0)
+          .map((a) => ({
+            type: a.type || 'OTHER',
+            title: a.title.trim(),
+            description: a.description || null,
+            assignee: a.assignee || 'UNKNOWN',
+            subject: a.subject || null,
+            amount: a.amount != null && a.amount !== '' ? Number(a.amount) : null,
+            deadline: a.deadline ? new Date(a.deadline).toISOString() : null,
+          })),
       };
       await apiSend<{ ok: true; id: string; published: boolean }>(`/api/admin/messages/${params.id}`, out, 'PUT');
       setFlash(action === 'publish' ? 'Approved and published! ✅' : action === 'reject' ? 'Rejected.' : 'Saved.');
@@ -153,6 +178,80 @@ export default function ReviewMessagePage({ params }: { params: { id: string } }
           </div>
           <label className="label">Contact (name / phone / email)</label><input name="contactInformation" className="input" defaultValue={msg.contactInformation ? JSON.stringify(msg.contactInformation) : ''} />
           <label className="label">Required items (comma separated)</label><textarea name="requiredItems" rows={2} className="input" defaultValue={Array.isArray(msg.requiredItems) ? (msg.requiredItems as string[]).join(', ') : ''} />
+
+          <label className="label mt-3">Action items — who needs to do what</label>
+          <div className="space-y-2">
+            {items.length === 0 && <p className="text-xs text-slate-400">None extracted. Add one if the message requires an action.</p>}
+            {items.map((a, i) => (
+              <div key={a.id || `new-${i}`} className="space-y-2 rounded-lg border border-slate-200 p-2">
+                <div className="flex gap-2">
+                  <input
+                    className="input flex-1"
+                    value={a.title}
+                    placeholder="e.g. Bring an empty cereal box to school"
+                    onChange={(e) => setItems(items.map((it, j) => (j === i ? { ...it, title: e.target.value } : it)))}
+                  />
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-red-600 hover:underline"
+                    onClick={() => setItems(items.filter((_, j) => j !== i))}
+                  >
+                    remove
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <select
+                    className="input"
+                    value={a.type}
+                    onChange={(e) => setItems(items.map((it, j) => (j === i ? { ...it, type: e.target.value } : it)))}
+                  >
+                    {['PAY', 'SIGN', 'BRING', 'REGISTER', 'REPLY', 'PREPARE', 'COMPLETE', 'WEAR', 'OTHER'].map((t) => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+                  <select
+                    className="input"
+                    value={a.assignee ?? 'UNKNOWN'}
+                    onChange={(e) => setItems(items.map((it, j) => (j === i ? { ...it, assignee: e.target.value } : it)))}
+                  >
+                    {['PARENT', 'CHILD', 'TEACHER', 'UNKNOWN'].map((s) => (
+                      <option key={s} value={s}>
+                        {s === 'PARENT' ? 'Parent' : s === 'CHILD' ? 'Child' : s === 'TEACHER' ? 'Teacher' : 'Unknown'}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="input"
+                    placeholder="Subject (optional)"
+                    value={a.subject ?? ''}
+                    onChange={(e) => setItems(items.map((it, j) => (j === i ? { ...it, subject: e.target.value } : it)))}
+                  />
+                  <input
+                    className="input"
+                    type="date"
+                    value={a.deadline ? String(a.deadline).slice(0, 10) : ''}
+                    onChange={(e) => setItems(items.map((it, j) => (j === i ? { ...it, deadline: e.target.value } : it)))}
+                  />
+                </div>
+              </div>
+            ))}
+            <button
+              type="button"
+              className="text-sm font-medium text-brand-700 hover:underline"
+              onClick={() => setItems([...items, { id: '', type: 'OTHER', title: '', description: null, assignee: 'PARENT', subject: null, amount: null, deadline: null }])}
+            >
+              + Add action item
+            </button>
+          </div>
+
+          {msg.extractedJson != null && (
+            <details className="mt-3 rounded-lg bg-slate-50 p-2">
+              <summary className="cursor-pointer text-xs font-semibold text-slate-500">AI agent output (full JSON)</summary>
+              <pre className="mt-2 max-h-60 overflow-auto text-[11px] leading-4 text-slate-600">
+                {JSON.stringify(msg.extractedJson, null, 2)}
+              </pre>
+            </details>
+          )}
 
           <div className="flex gap-2 pt-2">
             <SubmitButton type="button" onClick={() => submit('publish')} pending={saving === 'publish'}>Approve & publish</SubmitButton>

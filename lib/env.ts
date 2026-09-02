@@ -14,6 +14,10 @@ const envSchema = z.object({
   AI_MODE: z.enum(['dev', 'remote']).default('dev'),
   OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+  /** Preferred AI extraction endpoint settings (any OpenAI-compatible API). Falls back to OPENAI_*. */
+  AI_API_BASE_URL: z.string().optional(),
+  AI_API_KEY: z.string().optional(),
+  AI_MODEL: z.string().optional(),
 
   /** Shared secret for the /api/cron/reminders scheduler endpoint (optional in dev). */
   CRON_SECRET: z.string().optional(),

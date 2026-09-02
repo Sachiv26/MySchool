@@ -88,6 +88,16 @@ export class RuleBasedAiExtractionService implements AiExtractionService {
       requiredItems,
       actionItems,
       contactInformation,
+      // Extended agent fields (deterministic stubs for the offline extractor).
+      categories: [messageType],
+      classes: [],
+      projects: [],
+      detectedDates: [
+        ...(eventDate ? [{ date: eventDate, isDeadline: false, context: 'Event date', notes: null }] : []),
+        ...(deadline ? [{ date: deadline, isDeadline: true, context: 'Deadline', notes: null }] : []),
+      ],
+      people: [],
+      dateNotes: null,
       registrationRequired,
       permissionRequired,
       importance,
@@ -216,15 +226,16 @@ private buildActionItems(o: {
       items.push({
         type: 'PAY',
         title: o.deadline ? `Pay ${fmtMoney(o.amount)} by ${o.deadline}` : `Pay ${fmtMoney(o.amount)}`,
+        assignee: 'PARENT',
         amount: o.amount,
         deadline: o.deadline,
       });
     }
-    if (o.permissionRequired) items.push({ type: 'SIGN', title: 'Sign the permission slip', deadline: o.deadline });
-    if (o.registrationRequired) items.push({ type: 'REGISTER', title: 'Register for the event', deadline: o.deadline });
-    for (const item of o.requiredItems) items.push({ type: 'BRING', title: item });
+    if (o.permissionRequired) items.push({ type: 'SIGN', title: 'Sign the permission slip', assignee: 'PARENT', deadline: o.deadline });
+    if (o.registrationRequired) items.push({ type: 'REGISTER', title: 'Register for the event', assignee: 'PARENT', deadline: o.deadline });
+    for (const item of o.requiredItems) items.push({ type: 'BRING', title: item, assignee: 'CHILD' });
     if (this.hasAny(o.raw, /reply|let us know|respond/i)) {
-      items.push({ type: 'REPLY', title: 'Respond to the school', deadline: o.deadline });
+      items.push({ type: 'REPLY', title: 'Respond to the school', assignee: 'PARENT', deadline: o.deadline });
     }
     return items.slice(0, 8);
   }

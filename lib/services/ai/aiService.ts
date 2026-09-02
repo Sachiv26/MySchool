@@ -6,8 +6,16 @@ export interface ExtractionContext {
   schoolName?: string;
   /** Known grade names to match against (from the school's configured grades). */
   gradeNames?: string[];
+  /** Known class names (e.g. "4B") for finer relevance matching. */
+  classNames?: string[];
   /** Reference date for relative phrases like "Friday". Defaults to now. */
   today?: Date;
+  /**
+   * Optional data URL (data:image/jpeg;base64,...) of the source image.
+   * Vision-capable remote extractors send it to the model directly; the
+   * rule-based dev extractor ignores it and relies on OCR'd text.
+   */
+  imageDataUrl?: string;
 }
 
 export interface AiExtractionService {

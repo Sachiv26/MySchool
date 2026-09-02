@@ -23,9 +23,13 @@ engine.
 - **Folder ingestion** stored events of file types (.txt, .md, .pdf, images).
 - **Modular OCR** (`OcrService` interface) — local dev driver + Tesseract.js; the
   cloud stubs (Google Vision / Azure / AWS Textract) describe how to plug them in.
-- **AI extraction** returning structured JSON validated with **Zod** —
-  rule-based offline extractor (default) or a hosted model (`AI_MODE=remote`).
-  Never invents information — uncertain fields stay `null`.
+- **AI extraction ("School Communication Intelligence Agent")** returning
+  structured JSON validated with **Zod** — rule-based offline extractor
+  (default) or a vision-capable hosted model (`AI_MODE=remote`; reads text
+  *and* images). Extracts categories, affected grades/classes, events vs
+  deadlines, payments, projects broken into actionable tasks, and action
+  items tagged with a **PARENT / CHILD / TEACHER** assignee. Never invents
+  information — uncertain fields stay `null` (ambiguous dates get `dateNotes`).
 - **Admin dashboard** — messages, review, grades, parents, absences, scan folder.
 - **Message review screen** — original vs. extracted, edit, approve/reject/reprocess.
 - **Parent dashboard** — today, upcoming, action-required, notifications, children.
@@ -54,7 +58,7 @@ engine.
 | Auth         | jose (JWT) httpOnly cookie + bcryptjs hashing      |
 | OCR          | OcrService interface; Dev + Tesseract providers    |
 | PDF          | pdf-parse                                         |
-| AI extraction| rule-based (dev) / OpenAI-compatible remote       |
+| AI extraction| School Communication Intelligence Agent — rule-based (dev) / vision-capable OpenAI-compatible remote |
 | Tests        | Vitest                                            |
 | Utilities    | dayjs (dates), lucide-react (icons)               |
 
@@ -187,18 +191,24 @@ It decides:
 - applicable grade(s) (or `allGrades`) and whether grades are ambiguous
 - event date / time / location
 - deadline, amount + currency
-- required items, action items, contact information
+- required items, action items (with **who** must act: parent, child or teacher),
+  contact information, people explicitly named in the message
+- projects/assignments broken down into actionable tasks (with due dates)
+- every detected date, flagged as event date vs deadline — ambiguous dates stay
+  `null` and the ambiguity is explained in `dateNotes`
 - registration / permission flags, importance, and whether reminders apply
 
 The schema is the single contract every path (rule-based or hosted model) must
 satisfy. Unknown values must be `null` — the system never invents facts. Every
 result carries per-field `confidence`, and any result that fails the schema is
-rejected rather than stored (empty < null < trusted).
+rejected rather than stored (empty < null < trusted). The full validated JSON is
+kept on the message (`Message.extractedJson`) for auditing and admin review.
 
 `AI_MODE=dev` uses the deterministic `RuleBasedAiExtractionService` (no network,
-no cost). `AI_MODE=remote` uses `RemoteAiExtractionService` via an
-OpenAI-compatible chat-completions endpoint (set `OPENAI_API_KEY` /
-`OPENAI_MODEL`). Implement `lib/services/ai/aiService.ts` to use another vendor.
+no cost). `AI_MODE=remote` uses `RemoteAiExtractionService` — the agent prompt —
+via any OpenAI-compatible chat-completions endpoint (set `AI_API_KEY`, optional
+`AI_MODEL` / `AI_API_BASE_URL`; legacy `OPENAI_API_KEY` / `OPENAI_MODEL` still
+work). Use a vision-capable model so poster/photo messages can be read directly.
 
 ## Message ingestion flow
 1. Drop a file into `/incoming-messages`.

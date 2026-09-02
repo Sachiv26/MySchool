@@ -7,6 +7,7 @@ import { extractRawContent } from './textExtractor';
 import { recordAudit, AuditActions } from './audit';
 import { getSchoolGrades } from './gradeService';
 import { AiExtraction } from './ai/aiSchemas';
+import { readFile } from 'fs/promises';
 
 /**
  * Folder-based ingestion pipeline.
@@ -106,6 +107,7 @@ export async function processFileIntoMessage(
     let extractedText: string | null = null;
     let ocrConfidence: number | null = null;
     let ocrMethod: string | null = null;
+    let imageDataUrl: string | undefined;
 
     if (source.isImage) {
       const ocr = getOcrService();
@@ -113,6 +115,26 @@ export async function processFileIntoMessage(
       extractedText = res.text || '';
       ocrConfidence = res.confidence;
       ocrMethod = res.method;
+
+      // Vision: hand the ORIGINAL image to the AI agent as well (when a
+      // remote extractor with a vision model is configured). The OCR text
+      // remains the offline fallback and a cross-check for the model.
+      //
+      // Only attach a real image — files named .jpg/.png that are actually
+      // plain text (e.g. a fixture with a .ocr.txt sidecar, or a corrupted
+      // upload) would be sent as a bogus data: URL and make the model return
+      // no content, failing the whole message.
+      const mime = mimeFor(file.extension);
+      if (mime) {
+        try {
+          const imgBuf = await readFile(file.absolutePath);
+          if (looksLikeImage(imgBuf)) {
+            imageDataUrl = `data:${mime};base64,${imgBuf.toString('base64')}`;
+          }
+        } catch {
+          // non-fatal — the OCR text still drives extraction
+        }
+      }
     }
 
     const workingText = (rawContent ?? extractedText ?? '').trim();
@@ -124,9 +146,12 @@ export async function processFileIntoMessage(
     let extraction: AiExtraction;
     try {
       const ai = getAiExtractionService();
+      const classNames = await prisma.class.findMany({ where: { schoolId }, select: { name: true } });
       extraction = await ai.extract(workingText, {
         sourceFilename: file.name,
         gradeNames: gradesConfig.map((g) => g.name),
+        classNames: classNames.map((c) => c.name),
+        imageDataUrl,
       });
     } catch (err) {
       const e = err instanceof Error ? err.message : String(err);
@@ -168,6 +193,7 @@ export async function processFileIntoMessage(
         currency: extraction.currency,
         requiredItems: extraction.requiredItems,
         contactInformation: extraction.contactInformation as Prisma.InputJsonValue | undefined,
+        extractedJson: extraction as unknown as Prisma.InputJsonValue,
         sourceDate: withDate(extraction.eventDate),
         importance: extraction.importance,
         needsReview,
@@ -189,10 +215,40 @@ export async function processFileIntoMessage(
           messageId: message.id,
           type: a.type,
           title: a.title,
+          description: a.description ?? null,
+          assignee: a.assignee,
+          subject: a.subject ?? null,
           amount: a.amount != null ? new Prisma.Decimal(a.amount) : null,
           deadline: withDate(a.deadline),
         })),
       });
+    }
+
+    // Rule 6: projects/assignments become trackable per-child tasks. A project
+    // with no extracted sub-tasks gets a single "work on" task so it is still
+    // trackable in the parent app.
+    const projectTasks = extraction.projects.flatMap((p) => {
+      const desc = `Project: ${p.title}${p.subject ? ` (${p.subject})` : ''}`;
+      const tasks = p.tasks.length
+        ? p.tasks.map((t) => ({
+            title: t.title,
+            description: t.description ? `${desc} — ${t.description}` : desc,
+            dueDate: t.dueDate ?? p.dueDate ?? null,
+          }))
+        : [{ title: `Work on: ${p.title}`, description: desc, dueDate: p.dueDate ?? null }];
+      return tasks.map((t) => ({
+        messageId: message.id,
+        type: 'COMPLETE',
+        title: t.title,
+        description: t.description,
+        assignee: 'CHILD',
+        subject: p.subject ?? null,
+        amount: null,
+        deadline: withDate(t.dueDate),
+      }));
+    });
+    if (projectTasks.length) {
+      await prisma.actionItem.createMany({ data: projectTasks });
     }
 
     if (eventDate && ['EVENT', 'SPORTS', 'SCHOOL_TRIP'].includes(extraction.messageType)) {
@@ -303,4 +359,23 @@ function mimeFor(ext: string): string | undefined {
     gif: 'image/gif',
   };
   return map[ext];
+}
+
+/**
+ * True when the buffer actually starts with the magic bytes of a common raster
+ * image. Guards against renamed text files being sent to vision models.
+ */
+function looksLikeImage(buf: Buffer): boolean {
+  if (buf.length < 12) return false;
+  // JPEG
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true;
+  // PNG
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true;
+  // GIF87a / GIF89a
+  if (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a') return true;
+  // WEBP (RIFF....WEBP)
+  if (buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return true;
+  // BMP
+  if (buf[0] === 0x42 && buf[1] === 0x4d) return true;
+  return false;
 }

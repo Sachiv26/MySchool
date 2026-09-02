@@ -1,11 +1,15 @@
 import { prisma } from '@/lib/prisma';
 import { Role } from '@prisma/client';
 import { isFeatureEnabled } from './featureFlags';
+import { sendPushToUser } from './pushService';
+import { sendEmailToUser } from './emailService';
 
 /**
- * Notification abstraction. MVP ships with in-app notifications only, but the
- * dispatch is channel-aware so email/SMS/push/WhatsApp providers can be added
- * without changing callers.
+ * Notification abstraction. The database row (in-app inbox) is ALWAYS written.
+ * Additional real-time channels can be enabled per payload:
+ *   - Web Push: always attempted (when the user has a subscription + VAPID set).
+ *   - Email:    attempted only when `channel: 'EMAIL'`.
+ * Side-channel delivery is fire-and-forget — it NEVER blocks or fails the caller.
  */
 
 export type NotifyChannel = 'IN_APP' | 'EMAIL' | 'SMS' | 'PUSH' | 'WHATSAPP';
@@ -27,6 +31,20 @@ export async function notify(payload: NotifyPayload): Promise<void> {
       url: payload.url ?? undefined,
     },
   });
+
+  // In-app row is written; now best-effort real-time delivery.
+  const sendPush = sendPushToUser(payload.userId, {
+    title: payload.title,
+    body: payload.body,
+    url: payload.url,
+  });
+  const sendEmail =
+    payload.channel === 'EMAIL'
+      ? sendEmailToUser(payload.userId, { title: payload.title, body: payload.body, url: payload.url })
+      : Promise.resolve();
+
+  // Fire-and-forget so the publish flow stays snappy; errors are logged inside.
+  void Promise.allSettled([sendPush, sendEmail]);
 }
 
 export async function createNotificationForSchool(schoolId: string, payload: Omit<NotifyPayload, 'userId'>) {

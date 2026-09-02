@@ -16,8 +16,14 @@ export default function ServiceWorkerRegistration() {
     if (!('serviceWorker' in navigator)) return;
 
     if (process.env.NODE_ENV !== 'production') {
+      // Kill only the caching app-shell worker; a separate push-only worker
+      // (/sw-push.js) is registered by PushSetup so dev push still works.
       navigator.serviceWorker.getRegistrations().then((regs) => {
-        regs.forEach((r) => r.unregister());
+        regs.forEach((r) => {
+          const active = r.active ?? r.waiting ?? r.installing;
+          const path = active ? new URL(active.scriptURL).pathname : new URL(r.scope).pathname;
+          if (path.endsWith('/sw.js')) void r.unregister();
+        });
       });
       if ('caches' in window) {
         caches.keys().then((keys) => keys.forEach((k) => caches.delete(k)));

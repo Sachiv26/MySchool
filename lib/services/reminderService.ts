@@ -1,6 +1,7 @@
 import dayjs from 'dayjs';
 import { prisma } from '@/lib/prisma';
 import { ReminderStatus } from '@/lib/validation/schemas';
+import { notify } from './notificationService';
 
 /**
  * Configurable reminder engine.
@@ -140,14 +141,12 @@ export async function dispatchDueReminders(): Promise<number> {
       continue;
     }
     try {
-      await prisma.notification.create({
-        data: {
-          userId: rem.parentProfile.userId,
-          channel: 'IN_APP',
-          title: rem.title,
-          body: rem.body ?? undefined,
-          url: rem.messageId ? `/messages/${rem.messageId}` : undefined,
-        },
+      await notify({
+        userId: rem.parentProfile.userId,
+        channel: 'EMAIL',
+        title: rem.title,
+        body: rem.body ?? undefined,
+        url: rem.messageId ? `/messages/${rem.messageId}` : undefined,
       });
       await prisma.reminder.update({
         where: { id: rem.id },

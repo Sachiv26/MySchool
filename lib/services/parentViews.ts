@@ -111,6 +111,8 @@ export async function getMessageDetailForParent(userId: string, messageId: strin
     actionItems: message.actionItems.map((a) => ({
       type: a.type,
       title: a.title,
+      description: a.description,
+      assignee: a.assignee,
       amount: decimalToNumber(a.amount),
       deadline: isoDateTime(a.deadline),
     })),

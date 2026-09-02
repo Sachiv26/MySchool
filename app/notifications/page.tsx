@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import PageShell from '@/components/PageShell';
 import { UrgencyTag, LoadingRows, ErrorBox, EmptyState } from '@/components/ui';
+import PushSetup from '@/components/PushSetup';
 import { apiGet, apiSend, fmtDateShort } from '@/lib/client/api';
 
 interface NotificationItem {
@@ -53,6 +54,8 @@ export default function NotificationsPage() {
       back="/"
     >
       {error && <ErrorBox message={error} />}
+
+      <PushSetup />
 
       {items && items.length > 0 && unreadCount > 0 && (
         <button onClick={markAll} disabled={busy} className="btn-secondary w-full">

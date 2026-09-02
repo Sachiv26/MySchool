@@ -104,6 +104,7 @@ model User {
 
   auditLogs       AuditLog[]    @relation("ActorLogs")
   notifications   Notification[]
+  pushSubscriptions PushSubscription[]
   absences        Absence[]     @relation("AbsenceSubmitter")
   reviewedMessages Message[]    @relation("ReviewedMessages")
 
@@ -293,6 +294,7 @@ model Message {
   sourceDate DateTime?
   importance Int?       // 1..10
   confidence Json?
+  extractedJson Json?   // full, validated AI agent output — lossless trace of what the extractor returned
 
   needsReview      Boolean @default(false)
   aiReview         Boolean @default(false) // needs human review before publishing
@@ -389,8 +391,11 @@ model ActionItem {
   id        String @id @default(cuid())
   message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
   messageId String
-  type      String @default("OTHER") // PAY | SIGN | BRING | REGISTER | REPLY | OTHER
+  type      String @default("OTHER") // PAY | SIGN | BRING | REGISTER | REPLY | PREPARE | COMPLETE | WEAR | OTHER
   title     String
+  description String? // extra context, e.g. which project/task this belongs to
+  assignee  String? // PARENT | CHILD | TEACHER | UNKNOWN — who the AI determined must act
+  subject   String? // school subject when the action relates to one (homework/project)
   amount    Decimal? @db.Decimal(10, 2)
   deadline  DateTime?
   states    ActionItemState[]
@@ -570,6 +575,23 @@ model Notification {
   readAt DateTime?
 
   @@index([userId, readAt])
+  @@index([userId])
+  createdAt DateTime @default(now())
+}
+
+// Web Push subscription (VAPID): one row per browser/device the user enables.
+// Used by the web push dispatcher to deliver real-time OS-level alerts even
+// when the app tab is closed. endpoint is unique per browser/device.
+model PushSubscription {
+  id        String @id @default(cuid())
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  endpoint  String @unique
+  p256dh    String // base64url ECDH public key
+  auth      String // base64url auth secret
+  userAgent String?
+  lastActiveAt DateTime @default(now())
+
   @@index([userId])
   createdAt DateTime @default(now())
 }

@@ -103,6 +103,8 @@ export async function getParentDashboard(userId: string) {
       id: a.id,
       type: a.type,
       title: a.title,
+      description: a.description,
+      assignee: a.assignee,
       amount: num(a.amount),
       deadline: a.deadline?.toISOString() ?? null,
       status: a.states[0]?.status ?? 'PENDING',

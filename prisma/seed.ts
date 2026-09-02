@@ -39,6 +39,7 @@ async function seedConfig() {
     UNIFORM: { label: 'Uniform', color: '#14b8a6', priority: 2 },
     PERMISSION: { label: 'Permission', color: '#f97316', priority: 3 },
     HOMEWORK: { label: 'Homework', color: '#3b82f6', priority: 1 },
+    PROJECT: { label: 'Project', color: '#059669', priority: 3 },
     OTHER: { label: 'Other', color: '#94a3b8', priority: 0 },
   };
   for (const key of MessageTypes) {
