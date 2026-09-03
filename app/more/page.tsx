@@ -5,6 +5,7 @@ import PageShell from '@/components/PageShell';
 import { apiSend } from '@/lib/client/api';
 
 const MENU_ITEMS = [
+  { href: '/documents', label: 'Documents', icon: '📁' },
   { href: '/children', label: 'My children', icon: '🧒' },
   { href: '/notifications', label: 'Notifications', icon: '🔔' },
   { href: '/payments', label: 'Payments', icon: '💳' },

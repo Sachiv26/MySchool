@@ -12,13 +12,14 @@ export async function apiGet<T>(url: string): Promise<T> {
 
 export async function apiSend<T>(
   url: string,
-  body: unknown,
-  method: 'POST' | 'PUT' | 'PATCH' = 'POST'
+  body: unknown = null,
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST'
 ): Promise<T> {
+  const isMultipart = body instanceof FormData;
   const res = await fetch(url, {
     method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: isMultipart ? undefined : { 'Content-Type': 'application/json' },
+    body: isMultipart ? (body as FormData) : body ? JSON.stringify(body) : method === 'DELETE' ? undefined : JSON.stringify({}),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok || json.ok === false) {
@@ -83,4 +84,13 @@ export function isToday(iso: string | null | undefined): boolean {
     d.getMonth() === now.getMonth() &&
     d.getFullYear() === now.getFullYear()
   );
+}
+
+/** Format bytes as a human-readable file size: 1.2 MB, 340 KB, etc. */
+export function fmtBytes(bytes: number | null | undefined): string {
+  if (bytes == null || bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }

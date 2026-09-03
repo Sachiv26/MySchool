@@ -7,7 +7,27 @@ import {
   isMessageVisibleToParent,
   requireParentProfile,
 } from './authorization';
+export { requireParentProfile } from './authorization';
 import { decimalToNumber, isoDateTime } from '@/lib/utils/serialize';
+import { getSchoolTerm, type SchoolTerm } from '@/lib/utils/southAfricanTerms';
+
+/** Optional term filter — when provided, scopes queries to messages in that term. */
+export interface TermFilter {
+  term: 1 | 2 | 3 | 4;
+  year: number;
+}
+
+/** Resolve a term filter from query params, defaulting to the current term. */
+export function resolveTermFilter(term?: number | null, year?: number | null): TermFilter | null {
+  if (term && year) return { term: term as 1 | 2 | 3 | 4, year };
+  return null;
+}
+
+/** Prisma where clause helper — scope a date column to a term. */
+function termDateWhere(term: TermFilter) {
+  const t = getSchoolTerm(term.term, term.year);
+  return { gte: t.startDate, lte: t.endDate };
+}
 
 /**
  * Parent-facing read models. Every query derives its scope from the
@@ -61,7 +81,7 @@ function serializeMessage(m: {
 }
 
 /** All published, grade-visible messages for the parent. */
-export async function getVisibleMessagesForParent(userId: string) {
+export async function getVisibleMessagesForParent(userId: string, termFilter?: TermFilter | null) {
   const profile = await requireParentProfile(userId);
   const children = await getParentChildren(profile.id);
   const schoolIds = Array.from(new Set(children.map((c) => c.schoolId)));
@@ -75,6 +95,7 @@ export async function getVisibleMessagesForParent(userId: string) {
       ...(gradeIds.length > 0
         ? { OR: [{ grades: { none: {} } }, { grades: { some: { gradeId: { in: gradeIds } } } }] }
         : {}),
+      ...(termFilter ? { term: termFilter.term, year: termFilter.year } : {}),
     },
     include: messageInclude,
     orderBy: [{ createdAt: 'desc' }],
@@ -236,7 +257,7 @@ export interface CalendarItem {
 }
 
 /** Unified calendar feed (events, deadlines, payments, absences), optionally scoped to one child. */
-export async function getCalendarForParent(userId: string, childIdFilter?: string | null): Promise<CalendarItem[]> {
+export async function getCalendarForParent(userId: string, childIdFilter?: string | null, termFilter?: TermFilter | null): Promise<CalendarItem[]> {
   const profile = await requireParentProfile(userId);
   const links = await prisma.parentChild.findMany({
     where: { parentId: profile.id },
@@ -252,7 +273,11 @@ export async function getCalendarForParent(userId: string, childIdFilter?: strin
   const labelFor = (names: string[]) => (names.length === 0 ? ['All grades'] : names);
 
   const events = await prisma.schoolEvent.findMany({
-    where: { schoolId: { in: schoolIds }, message: { published: true, rejected: false } },
+    where: {
+      schoolId: { in: schoolIds },
+      message: { published: true, rejected: false },
+      ...(termFilter ? { eventDate: termDateWhere(termFilter) } : {}),
+    },
     include: { message: { include: { grades: { include: { grade: true } } } } },
   });
   const eventItems: CalendarItem[] = events
@@ -280,6 +305,7 @@ export async function getCalendarForParent(userId: string, childIdFilter?: strin
       rejected: false,
       deadline: { not: null },
       OR: [{ grades: { none: {} } }, { grades: { some: { gradeId: { in: gradeIds } } } }],
+      ...(termFilter ? { term: termFilter.term, year: termFilter.year } : {}),
     },
     select: { id: true, title: true, deadline: true, grades: { include: { grade: true } } },
   });
@@ -294,7 +320,11 @@ export async function getCalendarForParent(userId: string, childIdFilter?: strin
   }));
 
   const requests = await prisma.paymentRequest.findMany({
-    where: { schoolId: { in: schoolIds }, message: { published: true, rejected: false } },
+    where: {
+      schoolId: { in: schoolIds },
+      message: { published: true, rejected: false },
+      ...(termFilter ? { dueDate: termDateWhere(termFilter) } : {}),
+    },
     include: {
       message: { include: { grades: { include: { grade: true } } } },
       payments: { where: { parentId: profile.id } },
@@ -414,6 +444,145 @@ export async function listAbsencesForParent(userId: string) {
     orderBy: { date: 'desc' },
     take: 100,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Planner — unified task list across all the parent's children
+// ---------------------------------------------------------------------------
+
+export interface PlannerTask {
+  id: string;
+  type: string; // PAY | SIGN | BRING | REGISTER | REPLY | PREPARE | COMPLETE | WEAR | OTHER
+  title: string;
+  description: string | null;
+  assignee: string | null; // PARENT | CHILD | TEACHER | UNKNOWN
+  subject: string | null;
+  amount: number | null;
+  deadline: string | null; // ISO
+  status: 'PENDING' | 'DONE' | 'DISMISSED';
+  gradeNames: string[];
+  messageTitle: string;
+  messageTypeLabel: string;
+  messageTypeColor: string | null;
+  messageId: string;
+}
+
+export interface PlannerEvent {
+  id: string;
+  title: string;
+  description: string | null;
+  eventDate: string; // ISO
+  endTime: string | null;
+  location: string | null;
+  isSchoolClosure: boolean;
+  registrationRequired: boolean;
+  registrationDeadline: string | null;
+  gradeNames: string[];
+  registered: boolean;
+}
+
+export interface PlannerData {
+  tasks: PlannerTask[];
+  events: PlannerEvent[];
+}
+
+/**
+ * All planner tasks + events for a parent. Derives scope strictly from the
+ * authenticated parent's own child links — childId filtering (when supplied)
+ * further narrows to one child but is never used for authorization.
+ */
+export async function getPlannerForParent(userId: string, childIdFilter?: string, termFilter?: TermFilter | null): Promise<PlannerData> {
+  const profile = await requireParentProfile(userId);
+  const links = await prisma.parentChild.findMany({
+    where: { parentId: profile.id },
+    include: { child: { include: { grade: true } } },
+  });
+  let children = links.map((l) => l.child);
+  if (childIdFilter) children = children.filter((c) => c.id === childIdFilter);
+  const childIds = children.map((c) => c.id);
+  const gradeIds = children.map((c) => c.gradeId);
+  const schoolIds = Array.from(new Set(children.map((c) => c.schoolId)));
+
+  // Published messages visible to this parent's grades.
+  const messages = await prisma.message.findMany({
+    where: {
+      published: true,
+      rejected: false,
+      schoolId: { in: schoolIds },
+      ...(gradeIds.length > 0
+        ? { OR: [{ grades: { none: {} } }, { grades: { some: { gradeId: { in: gradeIds } } } }] }
+        : {}),
+      ...(termFilter ? { term: termFilter.term, year: termFilter.year } : {}),
+    },
+    include: {
+      grades: { include: { grade: true } },
+      messageTypeOption: true,
+      actionItems: {
+        include: { states: { where: { parentId: profile.id } } },
+      },
+    },
+    take: 100,
+  });
+
+  const tasks: PlannerTask[] = [];
+  for (const m of messages) {
+    for (const item of m.actionItems) {
+      const state = item.states[0];
+      tasks.push({
+        id: item.id,
+        type: item.type,
+        title: item.title,
+        description: item.description,
+        assignee: item.assignee,
+        subject: item.subject,
+        amount: item.amount ? item.amount.toNumber() : null,
+        deadline: item.deadline?.toISOString() ?? null,
+        status: state?.status ?? 'PENDING',
+        gradeNames: m.grades.map((g) => g.grade.name),
+        messageTitle: m.title ?? 'Untitled',
+        messageTypeLabel: m.messageTypeOption?.label ?? 'Other',
+        messageTypeColor: m.messageTypeOption?.color ?? null,
+        messageId: m.id,
+      });
+    }
+  }
+
+  // Upcoming events for the parent's schools.
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const termDates = termFilter ? getSchoolTerm(termFilter.term, termFilter.year) : null;
+  const events = await prisma.schoolEvent.findMany({
+    where: {
+      schoolId: { in: schoolIds },
+      message: { published: true, rejected: false },
+      eventDate: {
+        gte: termDates ? termDates.startDate : startOfToday,
+        ...(termDates ? { lte: termDates.endDate } : {}),
+      },
+    },
+    include: {
+      message: { include: { grades: { include: { grade: true } } } },
+      registrations: { where: { parentId: profile.id } },
+    },
+    orderBy: { eventDate: 'asc' },
+    take: 60,
+  });
+
+  const plannerEvents: PlannerEvent[] = events.map((e) => ({
+    id: e.id,
+    title: e.title,
+    description: e.description,
+    eventDate: e.eventDate.toISOString(),
+    endTime: e.endTime ?? null,
+    location: e.location ?? null,
+    isSchoolClosure: e.isSchoolClosure,
+    registrationRequired: e.registrationRequired,
+    registrationDeadline: e.registrationDeadline?.toISOString() ?? null,
+    gradeNames: e.message ? e.message.grades.map((g) => g.grade.name) : [],
+    registered: e.registrations.length > 0,
+  }));
+
+  return { tasks, events: plannerEvents };
 }
 
 

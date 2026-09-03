@@ -37,8 +37,12 @@ export default function PageShell({
           )}
           <UserMenu
             links={[
+              { href: '/planner', label: 'Planner', icon: '📋' },
+              { href: '/documents', label: 'Documents', icon: '📁' },
               { href: '/notifications', label: 'Notifications', icon: '🔔' },
               { href: '/payments', label: 'Payments', icon: '💳' },
+              { href: '/calendar', label: 'Calendar', icon: '📅' },
+              { href: '/messages', label: 'All messages', icon: '💬' },
               { href: '/absences/new', label: 'Report absence', icon: '🏥' },
               { href: '/children', label: 'My children', icon: '🧒' },
             ]}

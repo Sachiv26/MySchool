@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import ServiceWorkerRegistration from '../components/ServiceWorkerRegistration';
+import { TermProvider } from '@/components/TermContext';
 
 export const metadata: Metadata = {
   title: {
@@ -31,7 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <ServiceWorkerRegistration />
-        {children}
+        <TermProvider>{children}</TermProvider>
       </body>
     </html>
   );

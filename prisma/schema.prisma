@@ -147,6 +147,7 @@ model School {
   paymentRequests PaymentRequest[]
   absences        Absence[]
   auditLogs       AuditLog[]
+  parentDocuments ParentDocument[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -202,6 +203,7 @@ model ParentProfile {
   eventRegistrations  EventRegistration[]
   actionItemStates    ActionItemState[]
   reminders           Reminder[]
+  documents           ParentDocument[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -219,11 +221,12 @@ model Child {
   classId       String?
   studentNumber String?
 
-  parents       ParentChild[]
-  absences      Absence[]
-  registrations EventRegistration[]
-  reminders     Reminder[]
-  actionStates  ActionItemState[]
+  parents          ParentChild[]
+  absences         Absence[]
+  registrations    EventRegistration[]
+  reminders        Reminder[]
+  actionStates     ActionItemState[]
+  parentDocuments  ParentDocument[]
 
   @@index([schoolId])
   @@index([gradeId])
@@ -296,6 +299,10 @@ model Message {
   confidence Json?
   extractedJson Json?   // full, validated AI agent output — lossless trace of what the extractor returned
 
+  // Auto-detected South African school term (1-4) + year for term-based grouping
+  term          Int?
+  year          Int?
+
   needsReview      Boolean @default(false)
   aiReview         Boolean @default(false) // needs human review before publishing
   published        Boolean @default(false) // only approved messages are visible
@@ -317,6 +324,7 @@ model Message {
   @@index([schoolId])
   @@index([processingStatus])
   @@index([published])
+  @@index([term, year])
   @@index([messageTypeKey])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -594,6 +602,41 @@ model PushSubscription {
 
   @@index([userId])
   createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Parent document storage — term-based uploads (report cards, etc.)
+// ---------------------------------------------------------------------------
+
+model ParentDocument {
+  id           String @id @default(cuid())
+  parent       ParentProfile @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  parentId     String
+  child        Child? @relation(fields: [childId], references: [id], onDelete: SetNull)
+  childId      String?
+  school       School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  schoolId     String
+
+  // Term scoping (1-4) + year — e.g. term 3 of 2026
+  term         Int
+  year         Int
+
+  // File metadata
+  fileName     String
+  fileType     String // MIME type
+  fileSize     Int // bytes
+  description  String?
+  category     String @default("OTHER") // REPORT_CARD, FORM, PHOTO, OTHER
+
+  // Storage location (relative path under /data/uploads)
+  storedPath   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([parentId, term, year])
+  @@index([childId])
+  @@index([schoolId])
 }
 
 // ---------------------------------------------------------------------------

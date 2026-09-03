@@ -1,11 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import PageShell from '@/components/PageShell';
 import { UrgencyTag, LoadingRows, ErrorBox, EmptyState } from '@/components/ui';
 import PushSetup from '@/components/PushSetup';
+import TermSelector from '@/components/TermSelector';
+import { useTerm } from '@/components/TermContext';
 import { apiGet, apiSend, fmtDateShort } from '@/lib/client/api';
+import { getSchoolTerm, formatTerm } from '@/lib/utils/southAfricanTerms';
 
 interface NotificationItem {
   id: string;
@@ -20,6 +23,7 @@ export default function NotificationsPage() {
   const [items, setItems] = useState<NotificationItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { selectedTerm } = useTerm();
 
   const load = () =>
     apiGet<{ ok: true; unread: number; notifications: NotificationItem[] }>('/api/notifications')
@@ -45,17 +49,33 @@ export default function NotificationsPage() {
     }
   };
 
+  // Group notifications by term (1-4) and filter to selected term.
+  const grouped = useMemo(() => {
+    if (!items) return [];
+    const termStart = new Date(selectedTerm.startDate);
+    const termEnd = new Date(selectedTerm.endDate);
+    return items
+      .filter((n) => {
+        const d = new Date(n.createdAt);
+        return d >= termStart && d <= termEnd;
+      })
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }, [items, selectedTerm]);
+
   const unreadCount = items?.filter((n) => !n.readAt).length ?? 0;
 
   return (
-    <PageShell
-      title="Notifications"
-      action={unreadCount > 0 ? { href: '#', label: '' } : undefined}
-      back="/"
-    >
+    <PageShell title="Notifications" back="/">
       {error && <ErrorBox message={error} />}
 
-      <PushSetup />
+      <div className="flex items-center justify-between gap-3">
+        <PushSetup />
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium text-slate-700">{formatTerm(selectedTerm)}</p>
+        <TermSelector />
+      </div>
 
       {items && items.length > 0 && unreadCount > 0 && (
         <button onClick={markAll} disabled={busy} className="btn-secondary w-full">
@@ -65,12 +85,12 @@ export default function NotificationsPage() {
 
       {!items && !error && <LoadingRows rows={4} />}
 
-      {items && items.length === 0 && (
-        <EmptyState icon="🔔" title="No notifications yet" hint="Reminders and important school updates will appear here." />
+      {items && grouped.length === 0 && (
+        <EmptyState icon="🔔" title={`No notifications for ${formatTerm(selectedTerm)}`} hint="Reminders and important school updates will appear here." />
       )}
 
       <ul className="space-y-3">
-        {(items ?? []).map((n) => (
+        {grouped.map((n) => (
           <li key={n.id}>
             <div className={`card flex gap-3 ${n.readAt ? 'opacity-70' : ''}`}>
               <span aria-hidden className="mt-0.5 text-lg">{n.readAt ? '📬' : '🔔'}</span>

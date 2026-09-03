@@ -1,5 +1,5 @@
 import { handler } from '@/lib/apiRoute';
-import { getCalendarForParent } from '@/lib/services/parentViews';
+import { getCalendarForParent, resolveTermFilter } from '@/lib/services/parentViews';
 import { prisma } from '@/lib/prisma';
 import { getSession } from '@/lib/auth/session';
 import { ForbiddenError } from '@/lib/services/authorization';
@@ -25,6 +25,11 @@ export const GET = handler(async (req: Request) => {
     childId = childIdParam;
   }
 
-  const items = await getCalendarForParent(session.sub, childId);
+  const termFilter = resolveTermFilter(
+    url.searchParams.get('term') ? Number(url.searchParams.get('term')) : null,
+    url.searchParams.get('year') ? Number(url.searchParams.get('year')) : null
+  );
+
+  const items = await getCalendarForParent(session.sub, childId, termFilter);
   return Response.json({ ok: true, items });
 });
