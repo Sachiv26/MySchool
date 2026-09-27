@@ -64,21 +64,23 @@ export class TesseractOcrService implements OcrService {
   }
 
   /**
-   * Candidate readings: the untouched file plus preprocessed derivatives when
+   * Candidate readings: the untouched image plus preprocessed derivatives when
    * sharp is available (invert rescues light/neon-on-dark posters; the plain
-   * contrast-stretched grayscale helps low-contrast scans).
+   * contrast-stretched grayscale helps low-contrast scans). The source may be a
+   * file path or an in-memory Buffer (WhatsApp media), which sharp and
+   * tesseract both accept interchangeably.
    */
-  private async buildVariants(filePath: string): Promise<ImageVariant[]> {
-    const variants: ImageVariant[] = [{ image: filePath, psms: PSM_SPARSE }];
+  private async buildVariants(source: string | Buffer): Promise<ImageVariant[]> {
+    const variants: ImageVariant[] = [{ image: source, psms: PSM_SPARSE }];
     const sharp = await loadSharp();
     if (!sharp) return variants;
     try {
-      const inverted = await sharp(filePath).grayscale().normalise().negate().png().toBuffer();
+      const inverted = await sharp(source).grayscale().normalise().negate().png().toBuffer();
       variants.push({ image: inverted, psms: PSM_FULL });
-      const boosted = await sharp(filePath).grayscale().normalise().png().toBuffer();
+      const boosted = await sharp(source).grayscale().normalise().png().toBuffer();
       variants.push({ image: boosted, psms: PSM_SPARSE });
     } catch {
-      // Undecodable file — the original path still runs.
+      // Undecodable image — the original still runs.
     }
     return variants;
   }
@@ -88,10 +90,13 @@ export class TesseractOcrService implements OcrService {
     // Dev fallback: allow sidecar to short-circuit when present.
     const sidecar = await readSidecarText(filePath);
     if (sidecar) return { text: sidecar, confidence: 0.99, method: this.method };
+    return this.recognizeBuffer(filePath);
+  }
 
+  async recognizeBuffer(source: string | Buffer): Promise<OcrResult> {
     try {
       const worker = await this.getEngine();
-      const variants = await this.buildVariants(filePath);
+      const variants = await this.buildVariants(source);
       let best: OcrResult | null = null;
       for (const variant of variants) {
         for (const psm of variant.psms) {

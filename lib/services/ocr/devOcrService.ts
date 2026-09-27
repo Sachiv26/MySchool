@@ -44,6 +44,13 @@ export class DevOcrService implements OcrService {
     }
     return { text: '', confidence: 0, method: this.method };
   }
+
+  /** An in-memory image has no sidecar to sit next to, so there is no result. */
+  async recognizeBuffer(_buffer: Buffer, _mimeType?: string): Promise<OcrResult> {
+    void _buffer;
+    void _mimeType;
+    return { text: '', confidence: 0, method: this.method };
+  }
 }
 
 /** Read a sidecar content file next to an image if one exists (shared util). */

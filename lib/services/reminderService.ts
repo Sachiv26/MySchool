@@ -1,6 +1,7 @@
 import dayjs from 'dayjs';
 import { prisma } from '@/lib/prisma';
 import { ReminderStatus } from '@/lib/validation/schemas';
+import { AppError, ForbiddenError, NotFoundError, requireParentProfile } from './authorization';
 import { notify } from './notificationService';
 
 /**
@@ -65,6 +66,81 @@ export async function getActiveReminderRules(): Promise<ReminderRuleLike[]> {
     name: r.name,
     isActive: r.isActive,
   }));
+}
+
+/**
+ * Pure guard: a reminder may only be rescheduled while it is still PENDING and
+ * its new time is in the future. A small (60 s) tolerance absorbs clock skew.
+ * Throws AppError(400) — unit-tested without a database.
+ */
+export function assertReminderEditable(status: string, scheduledFor: Date, now: Date = new Date()): void {
+  if (status !== 'PENDING') {
+    throw new AppError('Only pending reminders can be changed.', 400);
+  }
+  if (scheduledFor.getTime() < now.getTime() - 60_000) {
+    throw new AppError('Pick a date and time in the future.', 400);
+  }
+}
+
+/**
+ * Reschedule / turn off / turn on one of the signed-in parent's own reminders.
+ * Ownership is verified against the authenticated parent profile — the reminder
+ * id from the client is never trusted on its own. Returns the serialized
+ * updated reminder.
+ *
+ *  - { enabled: false }            → cancel a PENDING reminder (dispatcher skips it)
+ *  - { scheduledFor }              → reschedule a PENDING reminder
+ *  - { enabled: true }             → re-enable a CANCELLED reminder (its stored time must be future)
+ *  - { enabled: true, scheduledFor } → re-enable with a new date/time
+ */
+export interface ReminderUpdatePatch {
+  scheduledFor?: Date;
+  enabled?: boolean;
+}
+
+function serializeReminder(r: { id: string; reminderType: string; scheduledFor: Date; status: string }) {
+  return {
+    id: r.id,
+    reminderType: r.reminderType,
+    scheduledFor: r.scheduledFor.toISOString(),
+    status: r.status,
+  };
+}
+
+export async function updateParentReminder(userId: string, reminderId: string, patch: ReminderUpdatePatch) {
+  const profile = await requireParentProfile(userId);
+  const reminder = await prisma.reminder.findUnique({ where: { id: reminderId } });
+  if (!reminder) throw new NotFoundError('Reminder not found.');
+  if (reminder.parentId !== profile.id) throw new ForbiddenError('Not your reminder.');
+
+  // Turn off: only pending reminders can be cancelled.
+  if (patch.enabled === false) {
+    if (reminder.status !== 'PENDING') {
+      throw new AppError('Only pending reminders can be turned off.', 400);
+    }
+    const updated = await prisma.reminder.update({
+      where: { id: reminder.id },
+      data: { status: 'CANCELLED' },
+    });
+    return serializeReminder(updated);
+  }
+
+  // Reschedule and/or turn back on — the reminder must fire in the future.
+  if (patch.scheduledFor !== undefined || patch.enabled === true) {
+    if (reminder.status === 'SENT' || reminder.status === 'FAILED') {
+      throw new AppError('Only pending reminders can be changed.', 400);
+    }
+    const nextScheduled = patch.scheduledFor ?? reminder.scheduledFor;
+    assertReminderEditable(reminder.status === 'CANCELLED' ? 'PENDING' : reminder.status, nextScheduled);
+    const updated = await prisma.reminder.update({
+      where: { id: reminder.id },
+      data: { status: 'PENDING', scheduledFor: nextScheduled },
+    });
+    return serializeReminder(updated);
+  }
+
+  // Nothing to change — return the reminder as-is.
+  return serializeReminder(reminder);
 }
 
 /**

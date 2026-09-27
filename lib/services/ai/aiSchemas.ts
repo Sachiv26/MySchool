@@ -64,8 +64,24 @@ export const aiPersonSchema = z.object({
   role: z.string().nullable().optional(),
 });
 
+/**
+ * Treat an explicit `null` from the model the same as an omitted field.
+ *
+ * The agent prompt instructs the model to answer "null when unknown", so null is
+ * legitimate, meaningful output — it means "not present in the message" rather
+ * than "invalid". Rejecting it made every remote extraction fail validation and
+ * mark the whole message FAILED. Coercing to the schema default keeps the
+ * untrusted-output contract (a value is always produced) while honouring the
+ * prompt.
+ */
+function nullishTo<T extends z.ZodTypeAny>(schema: T, fallback: z.input<T>) {
+  return z.preprocess((v) => (v === null || v === undefined ? fallback : v), schema);
+}
+
 export const extractionSchema = z.object({
-  messageType: z.enum(MessageTypes),
+  // "null" means nothing clearly fits — the prompt allows it, so fall back to
+  // the neutral OTHER rather than failing the whole message.
+  messageType: nullishTo(z.enum(MessageTypes), 'OTHER'),
   // Detected grade names, e.g. ["Grade 4", "Grade 5"]. Empty array is valid and
   // means "applies to all grades".
   grades: z.array(z.string()),
@@ -104,7 +120,8 @@ export const extractionSchema = z.object({
 
   registrationRequired: z.boolean().nullable(),
   permissionRequired: z.boolean().nullable(),
-  importance: z.number().int().min(1).max(10).default(3),
+  // The prompt says "null when unclear" — treat that as the neutral 3.
+  importance: nullishTo(z.number().int().min(1).max(10), 3),
   shouldGenerateReminders: z.boolean().default(true),
 
   needsReview: z.boolean().default(false),

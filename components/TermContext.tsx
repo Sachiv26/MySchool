@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { getSchoolTerm, formatTerm, getTermsForYear, type SchoolTerm } from '@/lib/utils/southAfricanTerms';
+import { getSchoolTerm, formatTerm, getTermDates, getTermsForYear, type SchoolTerm } from '@/lib/utils/southAfricanTerms';
 
 interface TermContextValue {
   selectedTerm: SchoolTerm;
@@ -24,7 +24,10 @@ function loadStoredTerm(): SchoolTerm | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as { term: 1 | 2 | 3 | 4; year: number };
     if (parsed && typeof parsed.term === 'number' && typeof parsed.year === 'number') {
-      return { term: parsed.term, year: parsed.year, startDate: new Date(), endDate: new Date() };
+      // Rebuild the REAL term boundaries for the stored term/year — never "now",
+      // otherwise the term filter on parent views would match nothing.
+      const { start, end } = getTermDates(parsed.term, parsed.year);
+      return { term: parsed.term, year: parsed.year, startDate: start, endDate: end };
     }
   } catch {
     /* ignore */

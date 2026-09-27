@@ -13,6 +13,11 @@ export interface OcrResult {
 export interface OcrService {
   /** Extract text from a supported image file. Returns empty text when OCR fails. */
   recognize(filePath: string, mimeType?: string): Promise<OcrResult>;
+  /**
+   * Read text out of an in-memory image. Optional: a provider that can only
+   * handle files on disk omits it, and the pipeline falls back to AI vision.
+   */
+  recognizeBuffer?(buffer: Buffer, mimeType?: string): Promise<OcrResult>;
   /** True when the service can plausibly extract text from the given file. */
   supports(filePath: string): boolean;
 }

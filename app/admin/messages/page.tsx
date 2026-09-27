@@ -10,6 +10,7 @@ interface AdminMessage {
   id: string;
   title: string;
   sourceFilename: string;
+  sourceType: string;
   typeLabel: string | null;
   grades: string[];
   status: string;
@@ -32,19 +33,37 @@ interface AdminDashboard {
 
 export default function AdminMessagesPage() {
   const [filter, setFilter] = useState<'review' | 'failed' | 'published' | 'all'>('review');
+  const [source, setSource] = useState<'all' | 'whatsapp' | 'file'>('all');
   const [rows, setRows] = useState<AdminMessage[] | null>(null);
   const [dash, setDash] = useState<AdminDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = () =>
     Promise.all([
-      apiGet<{ ok: true; messages: AdminMessage[] }>(`/api/admin/messages?status=${filter}`),
+      apiGet<{ ok: true; messages: AdminMessage[] }>(
+        `/api/admin/messages?status=${filter}&source=${source}`
+      ),
       apiGet<{ ok: true; dashboard: AdminDashboard }>('/api/admin/dashboard'),
     ])
       .then(([m, d]) => { setRows(m.messages); setDash(d.dashboard); })
       .catch((e) => setError(e.message));
 
-  useEffect(() => { load(); }, [filter]);
+  // On mount, honour deep links such as /admin/messages?source=whatsapp&status=all
+  // before the first fetch, so we don't issue a request for the default tab first.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const s = params.get('source');
+    const st = params.get('status');
+    const nextSource = s === 'whatsapp' || s === 'file' ? s : 'all';
+    const nextFilter = st === 'failed' || st === 'published' || st === 'all' ? st : 'review';
+    if (nextSource !== source || nextFilter !== filter) {
+      setSource(nextSource);
+      setFilter(nextFilter);
+      return;
+    }
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, source]);
 
   if (error) return <AdminShell title="Messages"><ErrorBox message={error} /></AdminShell>;
   if (!rows || !dash) return <AdminShell title="Messages"><LoadingRows rows={3} /></AdminShell>;
@@ -56,17 +75,38 @@ export default function AdminMessagesPage() {
     { key: 'all', label: 'All' },
   ];
 
+  const sourceTabs: { key: typeof source; label: string }[] = [
+    { key: 'all', label: '📥 All sources' },
+    { key: 'whatsapp', label: '💬 WhatsApp' },
+    { key: 'file', label: '📄 Scanned files' },
+  ];
+
   return (
     <AdminShell title="Messages">
       <p className="text-sm text-slate-500">{dash.messages.total} messages · {dash.parents.count} parents · {dash.parents.children} children · {dash.reminders.pending} pending reminders</p>
 
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setFilter(t.key)}
             className={`rounded-full px-4 py-1.5 text-sm font-medium ${
               filter === t.key ? 'bg-brand-700 text-white' : 'bg-white text-slate-700 border border-slate-200'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+        <span className="font-semibold uppercase">Source</span>
+        {sourceTabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setSource(t.key)}
+            className={`rounded-full px-3 py-1 font-medium ${
+              source === t.key ? 'bg-slate-800 text-white' : 'bg-white text-slate-700 border border-slate-200'
             }`}
           >
             {t.label}
@@ -84,13 +124,21 @@ export default function AdminMessagesPage() {
       )}
 
       {rows.length === 0 ? (
-        <EmptyState icon="📭" title="No messages match this filter." hint="Scan the incoming folder to import messages." />
+        <EmptyState
+          icon="📭"
+          title="No messages match this filter."
+          hint={
+            source === 'whatsapp'
+              ? 'WhatsApp messages arrive through the webhook. Check the number linked on the WhatsApp page.'
+              : 'Scan the incoming folder to import messages.'
+          }
+        />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase text-slate-500">
-                <th className="px-3 py-2">Title</th><th className="px-3 py-2">Type / Grades</th>
+                <th className="px-3 py-2">Title</th><th className="px-3 py-2">From</th><th className="px-3 py-2">Type / Grades</th>
                 <th className="px-3 py-2">Status</th><th className="px-3 py-2">Imported</th>
                 <th className="px-3 py-2 text-right">Actions</th>
               </tr>
@@ -99,6 +147,15 @@ export default function AdminMessagesPage() {
               {rows.map((m) => (
                 <tr key={m.id} className="border-b border-slate-200">
                   <td className="px-3 py-2 font-medium">{m.title}</td>
+                  <td className="px-3 py-2 text-slate-600">
+                    {m.sourceType === 'whatsapp' ? (
+                      <span title={m.sourceFilename}>
+                        💬 {senderLabel(m.sourceFilename)}
+                      </span>
+                    ) : (
+                      <span title={m.sourceFilename} className="text-xs">📄 {m.sourceFilename}</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2">
                     <div className="flex flex-col">
                       <span className="text-slate-600">{m.typeLabel ?? '—'}</span>
@@ -122,10 +179,19 @@ export default function AdminMessagesPage() {
       )}
 
       {filter === 'review' && (
-        <Link href="/admin/scan" className="btn-primary w-auto">📁 Process new messages</Link>
+        <Link href="/admin/whatsapp" className="btn-primary w-auto">💬 WhatsApp inbox</Link>
       )}
     </AdminShell>
   );
+}
+
+/**
+ * WhatsApp messages are stored with a synthetic filename of
+ * `whatsapp:<from-number>:<wamid>`, so pull out the sender for display.
+ */
+function senderLabel(sourceFilename: string): string {
+  const parts = sourceFilename.split(':');
+  return parts.length >= 2 ? `+${parts[1]}` : sourceFilename;
 }
 
 function StatCard({ label, value }: { label: string; value: number }) {

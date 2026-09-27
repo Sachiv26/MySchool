@@ -319,6 +319,57 @@ export async function getCalendarForParent(userId: string, childIdFilter?: strin
     urgent: true,
   }));
 
+  // Dated notices without a SchoolEvent row (e.g. GENERAL/REMINDER messages that
+  // still carry an eventDate) would otherwise never surface on any calendar.
+  const datedMessages = await prisma.message.findMany({
+    where: {
+      schoolId: { in: schoolIds },
+      published: true,
+      rejected: false,
+      eventDate: { not: null },
+      events: { none: {} },
+      OR: [{ grades: { none: {} } }, { grades: { some: { gradeId: { in: gradeIds } } } }],
+      ...(termFilter ? { term: termFilter.term, year: termFilter.year } : {}),
+    },
+    include: { grades: { include: { grade: true } } },
+  });
+  const datedItems: CalendarItem[] = datedMessages.map((m) => ({
+    id: m.id,
+    kind: 'EVENT' as const,
+    title: m.title ?? 'School event',
+    date: isoDateTime(m.eventDate)!,
+    time: m.startTime,
+    location: m.location,
+    labels: labelFor(m.grades.map((g) => g.grade.name)),
+    url: `/messages/${m.id}`,
+    urgent: false,
+  }));
+
+  // Per-task deadlines ("study for...", "bring X by...") from visible messages.
+  const datedActionItems = await prisma.actionItem.findMany({
+    where: {
+      deadline: { not: null },
+      message: {
+        schoolId: { in: schoolIds },
+        published: true,
+        rejected: false,
+        OR: [{ grades: { none: {} } }, { grades: { some: { gradeId: { in: gradeIds } } } }],
+      },
+    },
+    include: { message: { include: { grades: { include: { grade: true } } } } },
+    orderBy: { deadline: 'asc' },
+    take: 300,
+  });
+  const actionDeadlineItems: CalendarItem[] = datedActionItems.map((a) => ({
+    id: a.id,
+    kind: 'DEADLINE' as const,
+    title: a.title,
+    date: isoDateTime(a.deadline)!,
+    labels: labelFor(a.message.grades.map((g) => g.grade.name)),
+    url: `/messages/${a.messageId}`,
+    urgent: true,
+  }));
+
   const requests = await prisma.paymentRequest.findMany({
     where: {
       schoolId: { in: schoolIds },
@@ -362,8 +413,8 @@ export async function getCalendarForParent(userId: string, childIdFilter?: strin
     urgent: false,
   }));
 
-  return [...eventItems, ...deadlineItems, ...paymentItems, ...absenceItems].sort((a, b) =>
-    a.date.localeCompare(b.date)
+  return [...eventItems, ...datedItems, ...deadlineItems, ...actionDeadlineItems, ...paymentItems, ...absenceItems].sort(
+    (a, b) => a.date.localeCompare(b.date)
   );
 }
 
@@ -547,28 +598,31 @@ export async function getPlannerForParent(userId: string, childIdFilter?: string
     }
   }
 
-  // Upcoming events for the parent's schools.
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
-  const termDates = termFilter ? getSchoolTerm(termFilter.term, termFilter.year) : null;
+  // All events for the parent's schools from published, non-rejected messages —
+  // past ones included so the month grid can show history. Grade visibility
+  // matches the calendar feed: a message targeting specific grades is only
+  // visible when one of the parent's children is in that grade.
   const events = await prisma.schoolEvent.findMany({
     where: {
       schoolId: { in: schoolIds },
       message: { published: true, rejected: false },
-      eventDate: {
-        gte: termDates ? termDates.startDate : startOfToday,
-        ...(termDates ? { lte: termDates.endDate } : {}),
-      },
+      ...(termFilter ? { eventDate: termDateWhere(termFilter) } : {}),
     },
     include: {
       message: { include: { grades: { include: { grade: true } } } },
       registrations: { where: { parentId: profile.id } },
     },
     orderBy: { eventDate: 'asc' },
-    take: 60,
+    take: 250,
   });
 
-  const plannerEvents: PlannerEvent[] = events.map((e) => ({
+  const plannerEvents: PlannerEvent[] = events
+    .filter(
+      (e) =>
+        e.message &&
+        (e.message.grades.length === 0 || e.message.grades.some((g) => gradeIds.includes(g.gradeId)))
+    )
+    .map((e) => ({
     id: e.id,
     title: e.title,
     description: e.description,
@@ -582,7 +636,40 @@ export async function getPlannerForParent(userId: string, childIdFilter?: string
     registered: e.registrations.length > 0,
   }));
 
-  return { tasks, events: plannerEvents };
+  // Dated notices without a SchoolEvent row (e.g. GENERAL/REMINDER messages that
+  // still carry an eventDate) surface as events so the planner shows them too.
+  const datedMessages = await prisma.message.findMany({
+    where: {
+      published: true,
+      rejected: false,
+      schoolId: { in: schoolIds },
+      eventDate: { not: null },
+      events: { none: {} },
+      ...(gradeIds.length > 0
+        ? { OR: [{ grades: { none: {} } }, { grades: { some: { gradeId: { in: gradeIds } } } }] }
+        : {}),
+      ...(termFilter ? { term: termFilter.term, year: termFilter.year } : {}),
+    },
+    include: messageInclude,
+  });
+  const datedEvents: PlannerEvent[] = datedMessages.map((m) => ({
+    id: m.id,
+    title: m.title ?? 'School event',
+    description: m.summary,
+    eventDate: (m.eventDate as Date).toISOString(),
+    endTime: null,
+    location: m.location,
+    isSchoolClosure: false,
+    registrationRequired: false,
+    registrationDeadline: null,
+    gradeNames: m.grades.map((g) => g.grade.name),
+    registered: false,
+  }));
+
+  return {
+    tasks,
+    events: [...plannerEvents, ...datedEvents].sort((a, b) => a.eventDate.localeCompare(b.eventDate)),
+  };
 }
 
 

@@ -7,7 +7,7 @@ export default function manifest(): MetadataRoute.Manifest {
     description: 'Structured school communication and reminders for parents.',
     start_url: '/',
     display: 'standalone',
-    background_color: '#f6f7f9',
+    background_color: '#91a3b0',
     theme_color: '#0f766e',
     orientation: 'portrait',
     icons: [

@@ -10,6 +10,7 @@ const ITEMS = [
   { href: '/admin/absences', label: 'Absences', icon: '🏥' },
   { href: '/admin/grades', label: 'Grades', icon: '🎓' },
   { href: '/admin/parents', label: 'Parents', icon: '👪' },
+  { href: '/admin/whatsapp', label: 'WhatsApp', icon: '💬' },
 ];
 
 /** Admin (school administrator) page shell with a lightweight top nav.

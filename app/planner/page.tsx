@@ -3,11 +3,9 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import Link from 'next/link';
 import PageShell from '@/components/PageShell';
-import { EmptyState, ErrorBox, LoadingRows, UrgencyTag } from '@/components/ui';
+import { EmptyState, ErrorBox, LoadingRows } from '@/components/ui';
 import { apiGet, apiSend, fmtDate, fmtDateShort, fmtTime12, fmtMoney, isToday } from '@/lib/client/api';
 import { downloadIcs, IcsTask, IcsEvent } from '@/lib/client/ics';
-
-type ViewMode = 'list' | 'calendar';
 
 type TaskStatus = 'PENDING' | 'DONE' | 'DISMISSED';
 
@@ -67,27 +65,13 @@ function isOverdue(deadline: string | null, status: TaskStatus): boolean {
   return new Date(deadline) < startOfDay(new Date());
 }
 
-function dateGroupKey(iso: string | null): { label: string; sort: number } {
-  if (!iso) return { label: 'No date', sort: 999 };
-  const d = new Date(iso);
-  const today = startOfDay(new Date());
-  const diff = Math.round((d.getTime() - today.getTime()) / 86400000);
-  if (diff < 0) return { label: 'Overdue', sort: -2 };
-  if (diff === 0) return { label: 'Today', sort: -1 };
-  if (diff === 1) return { label: 'Tomorrow', sort: 0 };
-  if (diff <= 7) return { label: 'This week', sort: 1 };
-  return { label: fmtDateShort(iso), sort: 2 + diff };
-}
-
-
 export default function PlannerPage() {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>('todo');
+  const [filter, setFilter] = useState<Filter>('all');
   const [preview, setPreview] = useState<Task | Event | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('calendar');
   const load = useCallback(() => {
     apiGet<{ ok: true; tasks: Task[]; events: Event[] }>('/api/planner')
       .then((d) => { setTasks(d.tasks); setEvents(d.events); })
@@ -103,17 +87,13 @@ export default function PlannerPage() {
       return true;
     });
   }, [tasks, filter]);
-  const groupedTasks = useMemo(() => {
-    const map = new Map<string, { label: string; sort: number; items: Task[] }>();
-    for (const t of filteredTasks) {
-      const g = dateGroupKey(t.deadline);
-      const existing = map.get(g.label);
-      if (existing) existing.items.push(t);
-      else map.set(g.label, { ...g, items: [t] });
-    }
-    return [...map.values()].sort((a, b) => a.sort - b.sort);
-  }, [filteredTasks]);
-  const upcomingEvents = useMemo(() => [...events].sort((a, b) => a.eventDate.localeCompare(b.eventDate)), [events]);
+  const upcomingEvents = useMemo(
+    () =>
+      events
+        .filter((e) => new Date(e.eventDate) >= startOfDay(new Date()))
+        .sort((a, b) => a.eventDate.localeCompare(b.eventDate)),
+    [events]
+  );
   const counts = useMemo(() => {
     if (!tasks) return { all: 0, todo: 0, overdue: 0, done: 0 };
     return {
@@ -154,95 +134,92 @@ export default function PlannerPage() {
         </div>
         <button onClick={handleDownloadCalendar} className="btn-outline shrink-0 text-sm">📥 Calendar</button>
       </div>
-      <div className="flex items-center justify-between">
-        <div role="tablist" aria-label="Filter tasks" className="flex gap-2 overflow-x-auto">
-          <FilterTab active={filter === 'todo'} onClick={() => setFilter('todo')} label="To Do" count={counts.todo} />
-          <FilterTab active={filter === 'overdue'} onClick={() => setFilter('overdue')} label="Overdue" count={counts.overdue} urgent />
-          <FilterTab active={filter === 'done'} onClick={() => setFilter('done')} label="Done" count={counts.done} />
-          <FilterTab active={filter === 'all'} onClick={() => setFilter('all')} label="All" count={counts.all} />
-        </div>
-        <div role="tablist" aria-label="View mode" className="flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
-          <button onClick={() => setViewMode('list')} className={`rounded-md px-2 py-1 text-xs font-medium ${viewMode === 'list' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>☰ List</button>
-          <button onClick={() => setViewMode('calendar')} className={`rounded-md px-2 py-1 text-xs font-medium ${viewMode === 'calendar' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}>📅 Cal</button>
-        </div>
+      <div role="tablist" aria-label="Filter tasks" className="flex gap-2 overflow-x-auto">
+        <FilterTab active={filter === 'todo'} onClick={() => setFilter('todo')} label="To Do" count={counts.todo} />
+        <FilterTab active={filter === 'overdue'} onClick={() => setFilter('overdue')} label="Overdue" count={counts.overdue} urgent />
+        <FilterTab active={filter === 'done'} onClick={() => setFilter('done')} label="Done" count={counts.done} />
+        <FilterTab active={filter === 'all'} onClick={() => setFilter('all')} label="All" count={counts.all} />
       </div>
       {!tasks && !error && <LoadingRows rows={4} />}
-      {viewMode === 'calendar' ? (
-        <CalendarGrid tasks={tasks ?? []} events={events} onItemClick={setPreview} />
-      ) : (
+      {tasks && (
         <>
-          {tasks && filteredTasks.length === 0 && (
-            <EmptyState icon={filter === 'done' ? '✨' : '🎯'} title={filter === 'done' ? 'Nothing completed yet' : 'Nothing here'}
-              hint={filter === 'overdue' ? 'No overdue tasks!' : filter === 'done' ? 'Completed tasks appear here.' : 'All done! 🎉'} />
-          )}
-          <div className="space-y-4">
-            {groupedTasks.map((group) => (
-              <section key={group.label} aria-label={group.label}>
-                <h2 className="px-1 pb-1 text-xs font-bold uppercase tracking-wide text-slate-500">{group.label}</h2>
-                <div className="space-y-2">{group.items.map((task) => (<TaskCard key={task.id} task={task} loading={busyId === task.id} onPreview={() => setPreview(task)} onToggle={toggleStatus} />))}</div>
-              </section>
-            ))}
-          </div>
-          {upcomingEvents.length > 0 && (
-            <section aria-label="Upcoming events">
-              <h2 className="px-1 pb-1 pt-2 text-xs font-bold uppercase tracking-wide text-slate-500">📅 Upcoming events</h2>
-              <div className="space-y-2">{upcomingEvents.slice(0, 8).map((event) => (<EventCard key={event.id} event={event} />))}</div>
-            </section>
+          <h2 className="px-1 pt-2 text-sm font-bold uppercase tracking-wide text-slate-500">Tasks</h2>
+          {filteredTasks.length === 0 ? (
+            <EmptyState icon="✅" title="Nothing here" hint="Tasks from published school messages will appear here." />
+          ) : (
+            <div className="card divide-y divide-slate-100 p-0">
+              {filteredTasks.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setPreview(t)}
+                  className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50"
+                >
+                  <span aria-hidden className="text-lg">
+                    {taskTypeIcon(t.type)}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span
+                      className={`block truncate text-sm font-semibold ${
+                        t.status === 'DONE' ? 'text-slate-400 line-through' : 'text-slate-900'
+                      }`}
+                    >
+                      {t.title}
+                    </span>
+                    <span className="block truncate text-xs text-slate-500">
+                      {t.deadline ? `Due ${fmtDateShort(t.deadline)}` : 'No due date'} · {t.messageTitle}
+                    </span>
+                  </span>
+                  {t.status !== 'PENDING' && (
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                      {t.status.toLowerCase()}
+                    </span>
+                  )}
+                  <span aria-hidden className="text-slate-300">
+                    ›
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
         </>
       )}
+      <CalendarGrid tasks={filteredTasks} events={events} onItemClick={setPreview} />
+      <h2 className="px-1 pt-2 text-sm font-bold uppercase tracking-wide text-slate-500">Upcoming events</h2>
+      {upcomingEvents.length === 0 ? (
+        <EmptyState icon="📅" title="No upcoming events" hint="Events from published school messages will appear here." />
+      ) : (
+        <div className="card divide-y divide-slate-100 p-0">
+          {upcomingEvents.map((e) => (
+            <button
+              key={e.id}
+              onClick={() => setPreview(e)}
+              className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-slate-50"
+            >
+              <span className="flex w-12 shrink-0 flex-col items-center rounded-lg bg-brand-50 px-2 py-1.5 text-brand-700">
+                <span className="text-[10px] font-semibold uppercase leading-none">
+                  {new Date(e.eventDate).toLocaleDateString(undefined, { month: 'short' })}
+                </span>
+                <span className="mt-0.5 text-sm font-bold leading-none">{new Date(e.eventDate).getDate()}</span>
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-slate-900">
+                  {e.isSchoolClosure ? '🏫 ' : '📅 '}
+                  {e.title}
+                </span>
+                <span className="block truncate text-xs text-slate-500">
+                  {fmtDate(e.eventDate)}
+                  {e.location ? ` · ${e.location}` : ''}
+                  {e.registrationRequired ? (e.registered ? ' · ✓ Registered' : ' · Registration required') : ''}
+                  {e.gradeNames.length > 0 ? ` · ${e.gradeNames.join(', ')}` : ''}
+                </span>
+              </span>
+              <span className="text-slate-300">›</span>
+            </button>
+          ))}
+        </div>
+      )}
       {preview && <PreviewModal item={preview} onClose={() => setPreview(null)} onToggle={toggleStatus} />}
     </PageShell>
-  );
-}
-
-function TaskCard({ task, loading, onPreview, onToggle }: { task: Task; loading: boolean; onPreview: () => void; onToggle: (task: Task, status: TaskStatus) => void }) {
-  const meta = TASK_TYPE_META[task.type] ?? TASK_TYPE_META.OTHER;
-  const overdue = isOverdue(task.deadline, task.status);
-  const done = task.status === 'DONE';
-  const level = done ? 'done' : task.status === 'DISMISSED' ? 'neutral' : overdue ? 'overdue' : task.deadline && isToday(task.deadline) ? 'urgent' : 'action';
-  return (
-    <div className={`card flex items-start gap-3 p-3 ${done ? 'opacity-70' : ''} ${overdue ? 'border-red-200 bg-red-50/50' : ''}`}>
-      <button onClick={() => onToggle(task, done ? 'PENDING' : 'DONE')} disabled={loading || task.status === 'DISMISSED'}
-        aria-label={done ? 'Mark as not done' : 'Mark as done'}
-        className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-xs ${done ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-300 hover:border-emerald-400'}`}>
-        {done && '✓'}
-      </button>
-      <button onClick={onPreview} className="min-w-0 flex-1 text-left">
-        <p className={`truncate text-sm font-semibold text-slate-900 ${done ? 'line-through' : ''}`}>{task.title}</p>
-        <p className="mt-0.5 text-xs text-slate-500">{meta.icon} {meta.label}{task.subject ? ` · ${task.subject}` : ''}{task.amount != null ? ` · ${fmtMoney(task.amount)}` : ''}</p>
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          <UrgencyTag level={level}>{overdue ? 'Overdue' : done ? 'Done' : task.deadline ? fmtDateShort(task.deadline) : 'No date'}</UrgencyTag>
-          {task.assignee && task.assignee !== 'UNKNOWN' && (
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
-              {task.assignee === 'CHILD' ? '👧 For child' : task.assignee === 'PARENT' ? '👤 For you' : task.assignee}
-            </span>
-          )}
-          {task.gradeNames.length > 0 && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">{task.gradeNames.join(', ')}</span>}
-        </div>
-      </button>
-    </div>
-  );
-}
-
-function EventCard({ event }: { event: Event }) {
-  const today = isToday(event.eventDate);
-  return (
-    <div className={`card flex items-start gap-3 p-3 ${today ? 'border-brand-300 bg-brand-50/60' : ''}`}>
-      <div className="flex w-12 shrink-0 flex-col items-center rounded-xl bg-white py-1 shadow-sm ring-1 ring-slate-200">
-        <span aria-hidden>{event.isSchoolClosure ? '🏫' : '📅'}</span>
-        <span className="text-[11px] font-semibold text-slate-600">{new Date(event.eventDate).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</span>
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-slate-900">{event.title}</p>
-        <p className="mt-0.5 text-xs text-slate-500">{fmtDate(event.eventDate)}{event.endTime ? ` · ${fmtTime12(event.endTime)}` : ''}{event.location ? ` · ${event.location}` : ''}</p>
-        <div className="mt-1 flex flex-wrap items-center gap-1">
-          <UrgencyTag level={today ? 'urgent' : 'info'}>{event.isSchoolClosure ? 'School closure' : today ? 'Today' : 'Event'}</UrgencyTag>
-          {event.registrationRequired && <UrgencyTag level={event.registered ? 'done' : 'action'}>{event.registered ? 'Registered' : 'Registration required'}</UrgencyTag>}
-          {event.gradeNames.length > 0 && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">{event.gradeNames.join(', ')}</span>}
-        </div>
-      </div>
-    </div>
   );
 }
 

@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { isFeatureEnabled } from './featureFlags';
 import { sendPushToUser } from './pushService';
 import { sendEmailToUser } from './emailService';
+import { sendWhatsAppToUser } from './whatsapp/outbound';
 
 /**
  * Notification abstraction. The database row (in-app inbox) is ALWAYS written.
@@ -19,6 +20,8 @@ export interface NotifyPayload {
   title: string;
   body?: string;
   url?: string;
+  /** Recorded on the outbound WhatsApp audit entry. */
+  schoolId?: string | null;
 }
 
 export async function notify(payload: NotifyPayload): Promise<void> {
@@ -42,9 +45,22 @@ export async function notify(payload: NotifyPayload): Promise<void> {
     payload.channel === 'EMAIL'
       ? sendEmailToUser(payload.userId, { title: payload.title, body: payload.body, url: payload.url })
       : Promise.resolve();
+  // WhatsApp is opt-in per notification: it costs a Meta conversation and
+  // parents may not have a number on file, so it only fires when asked for.
+  const sendWhatsApp =
+    payload.channel === 'WHATSAPP'
+      ? sendWhatsAppToUser(payload.userId, formatWhatsAppText(payload), { schoolId: payload.schoolId })
+      : Promise.resolve({ ok: false as const, reason: 'channel not WHATSAPP' });
 
   // Fire-and-forget so the publish flow stays snappy; errors are logged inside.
-  void Promise.allSettled([sendPush, sendEmail]);
+  void Promise.allSettled([sendPush, sendEmail, sendWhatsApp]);
+}
+
+/** Flatten a notification into the plain text a parent reads on WhatsApp. */
+function formatWhatsAppText(payload: NotifyPayload): string {
+  const lines = [payload.title, payload.body].filter(Boolean);
+  if (payload.url) lines.push(`Open the app: ${payload.url}`);
+  return lines.join('\n\n');
 }
 
 export async function createNotificationForSchool(schoolId: string, payload: Omit<NotifyPayload, 'userId'>) {

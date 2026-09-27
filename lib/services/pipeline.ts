@@ -2,116 +2,105 @@ import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { getAiExtractionService } from './ai';
 import { getOcrService } from './ocr';
-import { listIncomingFiles } from './fileScanner';
-import { extractRawContent } from './textExtractor';
 import { recordAudit, AuditActions } from './audit';
 import { getSchoolGrades } from './gradeService';
 import { AiExtraction } from './ai/aiSchemas';
-import { readFile } from 'fs/promises';
 
 /**
- * Folder-based ingestion pipeline.
- * Each file in /incoming-messages is read, OCR'd if needed, analysed by the AI
- * extraction service (Zod-validated), and persisted as a Message ready for an
- * administrator to review + publish. Nothing becomes visible to parents until
- * an admin approves it.
+ * Ingestion pipeline.
+ *
+ * The pipeline is CONTENT-based: it accepts text and/or an image buffer, runs
+ * OCR when needed, analyses the result with the AI extraction service
+ * (Zod-validated), and persists a Message ready for an administrator to review
+ * and publish. Nothing becomes visible to parents until an admin approves it.
+ *
+ * Sources are pluggable adapters that produce an `InboundContent`. Today the only
+ * source is the WhatsApp Cloud API webhook (see ./whatsapp/inbound); the pipeline
+ * itself is source-agnostic and holds no knowledge of transport.
  */
-
-export interface IngestResult {
-  imported: number;
-  skipped: number;
-  failed: number;
-  messages: { id: string; filename: string; status: string }[];
-}
-
 /**
- * Dry-run listing for the "Process New Messages" screen: which inbox files are
- * new for this school (not yet imported) vs already seen.
+ * A single inbound communication, independent of where it came from.
+ * Provide `text` for written messages, `image` for posters/photos, or both
+ * (WhatsApp captions arrive with the image bytes attached).
  */
-export async function previewIncomingFiles(
-  schoolId: string
-): Promise<{ name: string; extension: string; isImage: boolean; isNew: boolean }[]> {
-  const files = await listIncomingFiles();
-  const existing = await prisma.message.findMany({
-    where: { schoolId, sourceFilename: { in: files.map((f) => f.name) } },
-    select: { sourceFilename: true },
-  });
-  const seen = new Set(existing.map((e) => e.sourceFilename));
-  return files.map((f) => ({ name: f.name, extension: f.extension, isImage: f.isImage, isNew: !seen.has(f.name) }));
+export interface InboundContent {
+  /** Human-readable label used for Message.sourceFilename / AI context. */
+  label: string;
+  /** Stored on Message.sourceType. e.g. 'whatsapp', 'txt', 'jpg'. */
+  sourceType: string;
+  /** Raw message body. Ignored for a pure image when OCR yields text. */
+  text?: string | null;
+  /** In-memory image bytes (already downloaded from the provider). */
+  image?: { buffer: Buffer; mime: string };
+  /** Stable external id (e.g. Meta's wamid) for webhook idempotency. */
+  externalId?: string | null;
+  senderPhone?: string | null;
+  senderName?: string | null;
+  /** When the message actually arrived (drives Message.receivedAt). */
+  receivedAt?: Date | null;
+  actorUserId?: string | null;
 }
 
-
-export async function importIncomingFiles(
-  schoolId: string,
-  opts: { actorUserId?: string | null } = {}
-): Promise<IngestResult> {
-  const files = await listIncomingFiles();
-  const existing = await prisma.message.findMany({
-    where: { schoolId, sourceFilename: { in: files.map((f) => f.name) } },
-    select: { sourceFilename: true },
-  });
-  const seen = new Set(existing.map((e) => e.sourceFilename));
-
-  const result: IngestResult = { imported: 0, skipped: 0, failed: 0, messages: [] };
-  for (const file of files) {
-    if (seen.has(file.name)) {
-      result.skipped += 1;
-      continue;
-    }
-    seen.add(file.name);
-    try {
-      const message = await processFileIntoMessage(schoolId, file, opts.actorUserId);
-      result.imported += 1;
-      result.messages.push({ id: message.id, filename: message.sourceFilename, status: message.processingStatus });
-    } catch (err) {
-      console.error('[ingest] failed', file.name, err);
-      result.failed += 1;
-      result.messages.push({ id: '', filename: file.name, status: 'FAILED' });
-    }
-  }
-  return result;
-}
-
+/** Result of ingesting one inbound item. */
 export interface ProcessedMessage {
   id: string;
   sourceFilename: string;
   processingStatus: string;
   needsReview: boolean;
+  /** True when this exact external id was already ingested and skipped. */
+  duplicate?: boolean;
 }
 
 /**
- * Process a single inbox file into a Message. Throws on hard failures; all
- * recoverable pipeline outcomes are reported through the returned status.
+ * Ingest one inbound item into a Message row.
+ *
+ * This is the single seam every source funnels through. It is idempotent for
+ * sources that supply an `externalId`: re-delivering the same webhook returns
+ * the existing message instead of creating a duplicate.
  */
-export async function processFileIntoMessage(
+export async function ingestContent(
   schoolId: string,
-  file: { name: string; absolutePath: string; extension: string },
-  actorUserId?: string | null
+  content: InboundContent
 ): Promise<ProcessedMessage> {
+  // Webhook redelivery: Meta retries until it gets a 2xx, so the same wamid can
+  // legitimately arrive more than once. Return the original instead of dupes.
+  if (content.externalId) {
+    const existing = await prisma.message.findFirst({
+      where: { schoolId, whatsappMessageId: content.externalId },
+      select: { id: true, sourceFilename: true, processingStatus: true, needsReview: true },
+    });
+    if (existing) return { ...existing, duplicate: true };
+  }
+
   const gradesConfig = await getSchoolGrades(schoolId);
 
   const message = await prisma.message.create({
     data: {
       schoolId,
-      sourceFilename: file.name,
-      sourceType: file.extension,
-      originalFile: file.name,
+      sourceFilename: content.label,
+      sourceType: content.sourceType,
       processingStatus: 'PROCESSING',
       importedAt: new Date(),
+      whatsappMessageId: content.externalId ?? null,
+      senderPhone: content.senderPhone ?? null,
+      senderName: content.senderName ?? null,
+      receivedAt: content.receivedAt ?? new Date(),
     },
   });
 
   try {
-    const source = await extractRawContent(file.absolutePath);
-    let rawContent = source.rawContent;
+    const imageMime = content.image?.mime;
+    const hasImage = Boolean(content.image);
+
+    let rawContent = content.text ?? null;
     let extractedText: string | null = null;
     let ocrConfidence: number | null = null;
     let ocrMethod: string | null = null;
     let imageDataUrl: string | undefined;
 
-    if (source.isImage) {
+    if (content.image) {
       const ocr = getOcrService();
-      const res = await ocr.recognize(file.absolutePath, mimeFor(file.extension));
+      const res = await runOcrOnBuffer(ocr, content.image.buffer, imageMime);
       extractedText = res.text || '';
       ocrConfidence = res.confidence;
       ocrMethod = res.method;
@@ -120,27 +109,18 @@ export async function processFileIntoMessage(
       // remote extractor with a vision model is configured). The OCR text
       // remains the offline fallback and a cross-check for the model.
       //
-      // Only attach a real image — files named .jpg/.png that are actually
-      // plain text (e.g. a fixture with a .ocr.txt sidecar, or a corrupted
-      // upload) would be sent as a bogus data: URL and make the model return
-      // no content, failing the whole message.
-      const mime = mimeFor(file.extension);
-      if (mime) {
-        try {
-          const imgBuf = await readFile(file.absolutePath);
-          if (looksLikeImage(imgBuf)) {
-            imageDataUrl = `data:${mime};base64,${imgBuf.toString('base64')}`;
-          }
-        } catch {
-          // non-fatal — the OCR text still drives extraction
-        }
+      // Only attach a real image — bytes that are not actually an image would
+      // be sent as a bogus data: URL and make the model return no content,
+      // failing the whole message.
+      if (imageMime && looksLikeImage(content.image.buffer)) {
+        imageDataUrl = `data:${imageMime};base64,${content.image.buffer.toString('base64')}`;
       }
     }
 
     const workingText = (rawContent ?? extractedText ?? '').trim();
-    if (!workingText) {
+    if (!workingText && !imageDataUrl) {
       await updateMessage(message.id, { rawContent, extractedText, ocrConfidence, ocrMethod });
-      return finalize(message.id, schoolId, actorUserId, 'NEEDS_REVIEW', 'No text could be extracted from this file.');
+      return finalize(message.id, schoolId, content.actorUserId, 'NEEDS_REVIEW', 'No text could be extracted from this message.');
     }
 
     let extraction: AiExtraction;
@@ -148,7 +128,7 @@ export async function processFileIntoMessage(
       const ai = getAiExtractionService();
       const classNames = await prisma.class.findMany({ where: { schoolId }, select: { name: true } });
       extraction = await ai.extract(workingText, {
-        sourceFilename: file.name,
+        sourceFilename: content.label,
         gradeNames: gradesConfig.map((g) => g.name),
         classNames: classNames.map((c) => c.name),
         imageDataUrl,
@@ -156,7 +136,7 @@ export async function processFileIntoMessage(
     } catch (err) {
       const e = err instanceof Error ? err.message : String(err);
       await updateMessage(message.id, { rawContent, extractedText, ocrConfidence, ocrMethod });
-      return finalize(message.id, schoolId, actorUserId, 'FAILED', `AI extraction failed: ${e}`);
+      return finalize(message.id, schoolId, content.actorUserId, 'FAILED', `AI extraction failed: ${e}`);
     }
 // Resolve detected grade names against the school's configured grades.
     const gradeRows: { id: string; name: string }[] = [];
@@ -294,15 +274,15 @@ export async function processFileIntoMessage(
     }
 
     await recordAudit({
-      actorId: actorUserId ?? null,
+      actorId: content.actorUserId ?? null,
       schoolId,
       action: AuditActions.MESSAGE_PROCESSED,
       entityType: 'Message',
       entityId: message.id,
-      payload: { needsReview, messageType: extraction.messageType },
+      payload: { needsReview, messageType: extraction.messageType, source: content.sourceType },
     });
 
-    return finalize(message.id, schoolId, actorUserId, status, needsReview ? 'Needs administrator review before publishing.' : null);
+    return finalize(message.id, schoolId, content.actorUserId, status, needsReview ? 'Needs administrator review before publishing.' : null);
   } catch (err) {
     const e = err instanceof Error ? err.message : String(err);
     await prisma.message.update({
@@ -310,7 +290,7 @@ export async function processFileIntoMessage(
       data: { processingStatus: 'FAILED', processingError: e },
     });
     await recordAudit({
-      actorId: actorUserId ?? null,
+      actorId: content.actorUserId ?? null,
       schoolId,
       action: 'message.failed',
       entityType: 'Message',
@@ -350,20 +330,32 @@ function withDate(date: string | null | undefined): Date | null {
   return date ? new Date(`${date}T00:00:00.000Z`) : null;
 }
 
-function mimeFor(ext: string): string | undefined {
-  const map: Record<string, string> = {
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    png: 'image/png',
-    webp: 'image/webp',
-    gif: 'image/gif',
-  };
-  return map[ext];
+/**
+ * Run OCR over in-memory image bytes.
+ *
+ * `recognizeBuffer` is optional on the OcrService interface so file-only
+ * providers don't have to implement it. When it's missing (or throws) we return
+ * an empty result: the AI vision path can still read the poster, and the
+ * pipeline falls back to NEEDS_REVIEW when it cannot.
+ */
+async function runOcrOnBuffer(
+  ocr: ReturnType<typeof getOcrService>,
+  buffer: Buffer,
+  mime?: string
+): Promise<{ text: string; confidence: number | null; method: string }> {
+  if (!ocr.recognizeBuffer) return { text: '', confidence: null, method: 'unsupported' };
+  try {
+    return await ocr.recognizeBuffer(buffer, mime);
+  } catch (err) {
+    console.error('[ingest] buffer OCR failed', err);
+    return { text: '', confidence: null, method: 'error' };
+  }
 }
 
 /**
  * True when the buffer actually starts with the magic bytes of a common raster
- * image. Guards against renamed text files being sent to vision models.
+ * image. Guards against a caption-only or truncated download being sent to a
+ * vision model as if it were a picture.
  */
 function looksLikeImage(buf: Buffer): boolean {
   if (buf.length < 12) return false;

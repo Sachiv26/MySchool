@@ -137,6 +137,10 @@ model School {
   phone        String?
   email        String?
   primaryColor String? @default("#0f766e")
+  // WhatsApp Cloud API business number this school publishes from, in E.164
+  // (e.g. "+27821234567"). Inbound webhooks are matched against it so a
+  // multi-tenant deployment routes each message to the correct school.
+  whatsappNumber String?
 
   grades          Grade[]
   classes         Class[]
@@ -273,8 +277,8 @@ model Message {
   schoolId      String
 
   sourceFilename String
-  sourceType     String // txt | md | jpg | png | webp | pdf
-  originalFile   String? // stored/resolved path of the source
+  sourceType     String // txt | md | jpg | png | webp | pdf | whatsapp
+  originalFile   String? // stored/resolved path of the source (null for WhatsApp)
   rawContent     String? // the raw body (txt/md) or first-page text for pdf
   extractedText  String? // OCR'd text for images
   ocrConfidence  Float?
@@ -298,6 +302,15 @@ model Message {
   importance Int?       // 1..10
   confidence Json?
   extractedJson Json?   // full, validated AI agent output — lossless trace of what the extractor returned
+
+  // ---- Inbound source identity (WhatsApp Cloud API) ----
+  // Meta's message id (wamid) is stable and unique, so it doubles as the
+  // idempotency key that makes webhook redelivery a no-op.
+  whatsappMessageId String?
+  // E.164 sender number the message arrived from, e.g. "+27821234567".
+  senderPhone      String?
+  senderName       String?
+  receivedAt       DateTime?
 
   // Auto-detected South African school term (1-4) + year for term-based grouping
   term          Int?
@@ -326,6 +339,8 @@ model Message {
   @@index([published])
   @@index([term, year])
   @@index([messageTypeKey])
+  // Webhook redelivery guard: at most one Message per (school, wamid) pair.
+  @@unique([schoolId, whatsappMessageId])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

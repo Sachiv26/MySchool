@@ -103,10 +103,17 @@ export async function getAdminDashboard(schoolId: string): Promise<AdminDashboar
 /** Admin message list with optional status filter and search. */
 export async function listAdminMessages(
   schoolId: string,
-  filter: { status?: 'review' | 'failed' | 'published' | 'rejected' | 'all'; q?: string } = {}
+  filter: {
+    status?: 'review' | 'failed' | 'published' | 'rejected' | 'all';
+    q?: string;
+    /** Narrow to a single ingestion channel, e.g. 'whatsapp' vs scanned files. */
+    source?: 'all' | 'whatsapp' | 'file';
+  } = {}
 ) {
   const where = {
     schoolId,
+    ...(filter.source === 'whatsapp' ? { sourceType: 'whatsapp' } : {}),
+    ...(filter.source === 'file' ? { sourceType: { not: 'whatsapp' } } : {}),
     ...(filter.status === 'review'
       ? { rejected: false, needsReview: true, processingStatus: { not: 'FAILED' as const } }
       : {}),

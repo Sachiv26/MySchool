@@ -8,7 +8,6 @@ const MENU_ITEMS = [
   { href: '/documents', label: 'Documents', icon: '📁' },
   { href: '/children', label: 'My children', icon: '🧒' },
   { href: '/notifications', label: 'Notifications', icon: '🔔' },
-  { href: '/payments', label: 'Payments', icon: '💳' },
   { href: '/absences', label: 'Report an absence', icon: '🏠' },
   { href: '/calendar', label: 'Calendar', icon: '📅' },
   { href: '/messages', label: 'All messages', icon: '💬' },

@@ -15,6 +15,8 @@ export default function PushSetup() {
   const [status, setStatus] = useState<'loading' | 'unsupported' | 'off' | 'enabled' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
 
   const urlBase64ToUint8Array = (base64url: string): Uint8Array => {
     const b64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
@@ -133,6 +135,20 @@ export default function PushSetup() {
     }
   };
 
+  const sendTest = async () => {
+    setTesting(true);
+    setTestMsg(null);
+    try {
+      const r = await fetch('/api/push/test', { method: 'POST' });
+      const j = await r.json();
+      setTestMsg(j.ok ? 'Sent — check this device!' : j.error ?? 'Could not send.');
+    } catch {
+      setTestMsg('Could not send.');
+    } finally {
+      setTesting(false);
+    }
+  };
+
   if (status === 'unsupported') return null;
   if (status === 'loading') return null;
 
@@ -147,9 +163,17 @@ export default function PushSetup() {
         </p>
       </div>
       {status === 'enabled' ? (
-        <button type="button" onClick={disable} disabled={busy} className="btn-outline shrink-0 text-sm">
-          Disable
-        </button>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <div className="flex gap-2">
+            <button type="button" onClick={sendTest} disabled={testing} className="btn-primary text-sm">
+              {testing ? 'Sending…' : 'Send test'}
+            </button>
+            <button type="button" onClick={disable} disabled={busy} className="btn-outline text-sm">
+              Disable
+            </button>
+          </div>
+          {testMsg && <p className="max-w-[180px] text-right text-[11px] text-slate-500">{testMsg}</p>}
+        </div>
       ) : (
         <button type="button" onClick={enable} disabled={busy} className="btn-primary shrink-0 text-sm">
           {busy ? 'Enabling…' : 'Enable'}

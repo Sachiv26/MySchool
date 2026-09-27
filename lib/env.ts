@@ -22,6 +22,19 @@ const envSchema = z.object({
   /** Shared secret for the /api/cron/reminders scheduler endpoint (optional in dev). */
   CRON_SECRET: z.string().optional(),
 
+  // ---- WhatsApp Cloud API (Meta) ----
+  // Inbound messages arrive on the /api/webhooks/whatsapp endpoint; outbound
+  // notifications go through the same Cloud API business number.
+  WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+  // Meta signs every webhook POST with HMAC-SHA256 of the raw body using the
+  // app secret. Leave empty in local dev to skip verification.
+  WHATSAPP_APP_SECRET: z.string().optional(),
+  WHATSAPP_ACCESS_TOKEN: z.string().optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  WHATSAPP_API_VERSION: z.string().default('v21.0'),
+  /** Hard cap on inbound media we will download + OCR (bytes). */
+  WHATSAPP_MAX_MEDIA_BYTES: z.string().default(String(10 * 1024 * 1024)),
+
   FT_PARENT_CHAT: z.string().optional(),
   FT_PAYMENTS: z.string().optional(),
   FT_WHATSAPP: z.string().optional(),
@@ -63,8 +76,5 @@ export function boolEnv(value: string | undefined, fallback = false): boolean {
   return value === 'true' || value === '1';
 }
 
-/** Root folder for runtime data (uploads, inbox backups). Never under public/. */
+/** Root folder for runtime data (uploads, document storage). Never under public/. */
 export const DATA_DIR = process.env.DATA_DIR ?? 'data';
-
-/** Relative folder in which incoming messages are dropped for ingestion. */
-export const INCOMING_DIR = process.env.INCOMING_DIR ?? 'incoming-messages';

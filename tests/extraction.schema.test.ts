@@ -71,6 +71,34 @@ describe('Extraction schema contract', () => {
     expect(bad.ok).toBe(false);
   });
 
+  // --- null tolerance -------------------------------------------------
+  // The agent prompt tells the model to answer "null when unknown" for
+  // messageType and importance. That is legitimate output, not invalid output:
+  // rejecting it failed every remote extraction and marked the message FAILED.
+  // See the bug fixed in extractionSchema.
+
+  it('coerces a null messageType to a neutral type instead of failing', () => {
+    const res = tryValidateExtraction({ ...valid, messageType: null });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.data.messageType).toBe('OTHER');
+  });
+
+  it('coerces a null importance to the neutral default instead of failing', () => {
+    const res = tryValidateExtraction({ ...valid, importance: null });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.data.importance).toBe(3);
+  });
+
+  it('still rejects a non-null but invalid messageType', () => {
+    // Only null is forgiven — a made-up key is still a contract violation.
+    const bad = tryValidateExtraction({ ...valid, messageType: 'BOGUS' });
+    expect(bad.ok).toBe(false);
+  });
+
+  it('still rejects an out-of-range importance', () => {
+    expect(tryValidateExtraction({ ...valid, importance: 99 }).ok).toBe(false);
+  });
+
   // --- School Communication Intelligence Agent extensions ---
 
   it('defaults the extended agent fields when the model omits them', () => {

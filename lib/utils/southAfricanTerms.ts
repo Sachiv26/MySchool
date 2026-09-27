@@ -36,7 +36,6 @@ export function getTermDates(term: 1 | 2 | 3 | 4, year: number): { start: Date; 
 /** Build a full SchoolTerm descriptor. Defaults to the current SA term. */
 export function getSchoolTerm(term?: 1 | 2 | 3 | 4, year?: number): SchoolTerm {
   const now = new Date();
-  const t = term ?? now.getMonth(); // placeholder, replaced below
   const y = year ?? now.getFullYear();
   // Compute current term directly without recursion.
   const current = getTermDatesForYear(y);

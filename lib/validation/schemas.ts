@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { toE164 } from '@/lib/services/whatsapp/phone';
 
 // ---------------------------------------------------------------------------
 // Shared constants used by validation & types
@@ -174,6 +175,20 @@ export const mockPaySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Parent reminder edits
+// ---------------------------------------------------------------------------
+
+/** PATCH /api/reminders/[id] — reschedule and/or turn off/on a parent-owned reminder. */
+export const updateReminderSchema = z
+  .object({
+    scheduledFor: z.string().datetime().optional(), // full ISO timestamp, e.g. 2026-09-12T05:30:00.000Z
+    enabled: z.boolean().optional(), // false = turn off (cancel), true = turn back on
+  })
+  .refine((v) => v.scheduledFor !== undefined || v.enabled !== undefined, {
+    message: 'Provide scheduledFor and/or enabled.',
+  });
+
+// ---------------------------------------------------------------------------
 // Admin config
 // ---------------------------------------------------------------------------
 
@@ -186,6 +201,18 @@ export const gradeCreateSchema = z.object({
 export const featureFlagSchema = z.object({
   key: z.string().min(2).max(60),
   enabled: z.boolean(),
+});
+
+export const updateWhatsAppNumberSchema = z.object({
+  /** Blank clears the link; otherwise must parse as an E.164 number. */
+  whatsappNumber: z
+    .string()
+    .trim()
+    .max(32)
+    .refine((v) => v === '' || Boolean(toE164(v)), {
+      message: 'Enter a valid WhatsApp number in international format, e.g. +27 82 123 4567.',
+    })
+    .transform((v) => (v === '' ? null : toE164(v))),
 });
 
 // ---------------------------------------------------------------------------

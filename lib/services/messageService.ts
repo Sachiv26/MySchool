@@ -3,8 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { recordAudit, AuditActions } from './audit';
 import { reviewMessageSchema } from '@/lib/validation/schemas';
-import { INCOMING_DIR } from '@/lib/env';
-import { processFileIntoMessage } from './pipeline';
+import { ingestContent } from './pipeline';
 import { notify } from './notificationService';
 
 export type ReviewInput = z.infer<typeof reviewMessageSchema>;
@@ -221,7 +220,7 @@ export async function rejectMessage(messageId: string, schoolId: string, actorUs
   });
 }
 
-/** Reprocess: wipe dependent records and re-run the pipeline for the original file. */
+/** Reprocess: wipe dependent records and re-run the pipeline on the stored content. */
 export async function reprocessMessage(
   messageId: string,
   schoolId: string,
@@ -229,7 +228,6 @@ export async function reprocessMessage(
 ): Promise<{ id: string; status: string }> {
   const message = await prisma.message.findFirst({ where: { id: messageId, schoolId } });
   if (!message) throw new Error('Message not found.');
-  if (!message.originalFile) throw new Error('No original file to reprocess.');
 
   await prisma.$transaction([
     prisma.messageGrade.deleteMany({ where: { messageId } }),
@@ -238,24 +236,23 @@ export async function reprocessMessage(
     prisma.paymentRequest.deleteMany({ where: { messageId } }),
   ]);
 
-  const pathMod = await import('node:path');
-  const isAbsolute =
-    message.originalFile.startsWith('\\\\') ||
-    message.originalFile.startsWith('/') ||
-    /^[a-zA-Z]:[\\/]/.test(message.originalFile);
-  const file = {
-    name: message.sourceFilename,
-    extension: message.sourceType,
-    // The inbox folder is where the scanner found the file — `originalFile`
-    // stores a bare filename, so resolve it against INCOMING_DIR, not cwd.
-    absolutePath: isAbsolute
-      ? message.originalFile
-      : pathMod.resolve(process.cwd(), INCOMING_DIR, message.originalFile),
-  };
+  // Inbound media (WhatsApp photos) is not kept on disk, so a re-run works from
+  // the text and OCR output captured at ingest time. That is enough for the AI
+  // extraction step, which is the only thing reprocessing needs to redo.
+  const result = await ingestContent(schoolId, {
+    label: message.sourceFilename,
+    sourceType: message.sourceType,
+    text: message.rawContent ?? message.extractedText,
+    // Deliberately no `externalId`: this is a deliberate re-run, not a webhook
+    // redelivery, and must not be deduped against the original.
+    senderPhone: message.senderPhone,
+    senderName: message.senderName,
+    receivedAt: message.receivedAt,
+    actorUserId,
+  });
 
-  const result = await processFileIntoMessage(schoolId, file, actorUserId);
   // The pipeline writes a fresh Message row; retire the superseded one so
-  // re-running a file doesn't duplicate it in the messages list.
+  // re-running doesn't duplicate it in the messages list.
   if (result.id !== messageId) {
     await prisma.message.deleteMany({ where: { id: messageId, schoolId } });
   }

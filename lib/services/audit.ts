@@ -52,8 +52,11 @@ export const AuditActions = {
   ATTACHMENT_UPLOADED: 'attachment.uploaded',
   GRADE_CREATED: 'grade.created',
   FEATURE_FLAG_UPDATED: 'feature_flag.updated',
+  SCHOOL_UPDATED: 'school.updated',
   PARENT_LOGIN: 'auth.login',
   PARENT_LOGOUT: 'auth.logout',
+  WHATSAPP_RECEIVED: 'whatsapp.received',
+  WHATSAPP_SENT: 'whatsapp.sent',
 } as const;
 
 export type AuditAction = (typeof AuditActions)[keyof typeof AuditActions];
